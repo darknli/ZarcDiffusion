@@ -14,8 +14,12 @@ def main():
     config_model = config["model"]
     config_diffusion = config_model["diffusion"]
     config_lora = config_model.get("lora", None)
+    config_adapters = config_model.get("adapters", None)
     config_train = config["train"]
-    model = StableDiffision(config_diffusion, config_lora=config_lora, snr_gamma=config_model.get("snr_gamma", None),
+    model = StableDiffision(config_diffusion,
+                            config_lora=config_lora,
+                            config_adapters=config_adapters,
+                            snr_gamma=config_model.get("snr_gamma", None),
                             noise_offset=config_model.get("noise_offset", None))
     tokenizer = CLIPTokenizer.from_pretrained(
         config_diffusion["pretrained_model_name_or_path"], subfolder="tokenizer"
@@ -50,8 +54,13 @@ def main():
     )
 
     hooks = [
-        GenHook("valid_images", config_train["validation_prompt"], period=config_train["period"]),
-        CheckpointerHook(period=config_train["period"], max_to_keep=config_train["max_to_keep"]),
+        GenHook("valid_images",
+                config_train["validation_prompt"],
+                config_train["validation_image"],
+                period=config_train["period"]),
+        CheckpointerHook(
+            period=config_train["period"],
+            max_to_keep=config_train["max_to_keep"]),
         LoggerHook(),
     ]
     scheduler = config_train["lr_scheduler"]

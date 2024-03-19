@@ -1,0 +1,41 @@
+model:
+  diffusion:
+    pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
+    train_unet: false
+  adapters:
+    - adapter_method: control
+      pretrained_adapter_name_or_path: ""
+      train_adapter: true
+  noise_offset: 0
+  prediction_type: null
+  snr_gamma: 5.0
+
+
+train:
+  max_epoch: 2000
+  dataset_path: 'xz.csv'
+  size: 512
+  train_batch_size: 4
+  num_workers: 4
+
+  use_8bit_adam: false
+  mixed_precision: fp16
+  learning_rate: 1e-04
+  max_grad_norm: 1
+
+  warmup_method: linear
+  warmup_iters: 100
+  warmup_factor: 0.0001
+
+  lr_scheduler: constant
+  lr_warmup_steps: 0
+
+  validation_prompt: '1girl, bow, brown eyes, brown hair, curtains'
+  validation_image:
+    - 'valid_contol.png'
+  max_to_keep: 3
+  period: 50
+
+  workspace: workspace/contolnet
+
+  gradient_accumulation_steps: 1

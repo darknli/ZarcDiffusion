@@ -1,5 +1,6 @@
 import warnings
 import os
+import copy
 import torch
 from torch.nn import functional as F
 from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, StableDiffusionPipeline, UNet2DConditionModel
@@ -18,22 +19,27 @@ class StableDiffision(BaseModel):
     ----------
     config_diffusion : dict. diffusion model的配置
         * pretrained_model_name_or_path: str. 与diffusers一致
-        * train_unet: bool, optional. 是否训练unet
-        * unet_dtype: torch.dtype, optional. {'fp16', 'bf16', 'fp32'}, 默认fp16
-        * train_text_encoder: bool, optional. 是否训练text_encoder
-        * text_encoder_dtype: torch.dtype, optional. {'fp16', 'bf16', 'fp32'}, 默认fp16
-    config_vae : dict. vae设置
-        * pretrained_vae_name_or_path: str, optional. 不做特别设置则保持和`config_diffusion`一致
-        * vae_dtype: torch.dtype, optional. {'fp16', 'bf16', 'fp32'}, 默认fp16
-    config_scheduler : dict. noise_scheduler设置
-        * pretrained_model_name_or_path: str, optional. 不做特别设置则保持和`config_diffusion`一致
-    config_lora : dict. lora设置
+        * train_unet: Optional[bool], default False. 是否训练unet
+        * unet_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
+        * train_text_encoder: Optional[bool], default False. 是否训练text_encoder
+        * text_encoder_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
+    config_vae : dict, default None. vae设置, 不做特别设置则保持和`config_diffusion`一致
+        * pretrained_vae_name_or_path: Optional[str]. 不做特别设置则保持和`config_diffusion`一致
+        * vae_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
+    config_scheduler : dict, default None. noise_scheduler设置, 不做特别设置则保持和`config_diffusion`一致
+        * pretrained_model_name_or_path: Optional[str]. 不做特别设置则保持和`config_diffusion`一致
+    config_lora : dict, default None. lora设置
         * rank: int. lora的rank
-    config_adapters : dict. 待实现
+    config_adapters : List[dict], default None. 支持多个adapters!!!，每个dict类型的adapter配置如下：
+        * train_adapter: Optional[bool], default False.
+        * adapter_method: str. 目前只支持control, 未来也会支持t2i-adapter和ip-adapter
+        * pretrained_adapter_name_or_path: Optional[str]. 同diffusers一致，如果不做特别设置则不使用任何预训练模型
+        * adapter_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
     prediction_type : str, default None. 'epsilon' or 'v_prediction' or leave `None`
     snr_gamma: float, default None. 用于加速收敛, https://arxiv.org/abs/2303.09556
     noise_offset: float, default None. 参考https://www.crosslabs.org//blog/diffusion-with-offset-noise
     """
+
     def __init__(self,
                  config_diffusion: dict,
                  config_vae: dict = None,
@@ -49,6 +55,7 @@ class StableDiffision(BaseModel):
         self.vae = None
         self.noise_scheduler = None
         self.lora = None
+        self.adapters = None
         super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_adapters, prediction_type,
                          snr_gamma, noise_offset)
 
@@ -94,7 +101,7 @@ class StableDiffision(BaseModel):
             print("freeze text_encoder")
             self.text_encoder.requires_grad_(False)
         else:
-            self.trainable_params = cast_training_params(self.text_encoder)
+            self.trainable_params.extend(cast_training_params(self.text_encoder))
 
     def init_vae(self, config):
         if config is None:
@@ -175,6 +182,49 @@ class StableDiffision(BaseModel):
         self.lora = unet_lora_parameters
         self.trainable_params.extend(unet_lora_parameters)
 
+    def init_adapter(self, config):
+        if config is None:
+            config = []
+        adapters = []
+        for cfg_adapter in config:
+            train_adapter = cfg_adapter.get("train_adapter", False)
+            pretrained_adapter_name_or_path = cfg_adapter.get("pretrained_adapter_name_or_path", None)
+            if not (train_adapter or pretrained_adapter_name_or_path):
+                raise ValueError("没有使用预训练参数的adapter需要训练!")
+            if "train_unet" in self.config_diffusion and self.config_diffusion["train_unet"] and train_adapter:
+                raise ValueError("通常不会既训练unet又训练adapter!")
+            if cfg_adapter["adapter_method"] == "control":
+                from diffusers import ControlNetModel
+                if pretrained_adapter_name_or_path:
+                    adapter = ControlNetModel.from_pretrained(pretrained_adapter_name_or_path)
+                    print(f"controlnet加载{pretrained_adapter_name_or_path}权重")
+                else:
+                    adapter = ControlNetModel.from_unet(self.unet)
+                    print(f"从unet中初始化controlnet")
+            else:
+                raise NotImplementedError
+
+            if "adapter_dtype" in cfg_adapter:
+                if cfg_adapter["adapter_dtype"] == "fp16":
+                    adapter.to(self.device, torch.float16)
+                elif cfg_adapter["adapter_dtype"] == "bf16":
+                    adapter.to(self.device, torch.bfloat16)
+                elif cfg_adapter["adapter_dtype"] == "fp32":
+                    adapter.to(self.device, torch.float32)
+                else:
+                    warnings.warn("text_encoder_dtype config not in (`fp16`, `bf16`), set to fp16")
+                    adapter.to(self.device, torch.float16)
+            else:
+                adapter.to(self.device, self.unet.dtype)
+
+            if train_adapter:
+                adapter.train()
+                self.trainable_params.extend(cast_training_params(adapter))
+            else:
+                adapter.requires_grad_(False)
+            adapters.append(adapter)
+        self.adapters = adapters
+
     def forward(self, batch):
         latents = self.vae.encode(batch["image_origin"].to(dtype=self.vae.dtype)).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
@@ -201,6 +251,12 @@ class StableDiffision(BaseModel):
         # Get the text embedding for conditioning
         encoder_hidden_states = self.text_encoder(batch["input_ids"].to(self.device))[0]
 
+        if self.adapters:
+            down_block_res_samples, mid_block_res_sample = self.run_adapter(batch, noisy_latents, timesteps,
+                                                                            encoder_hidden_states)
+        else:
+            down_block_res_samples, mid_block_res_sample = None, None
+
         # Get the target for loss depending on the prediction type
         if self.prediction_type is not None:
             # set prediction_type of scheduler if defined
@@ -215,7 +271,18 @@ class StableDiffision(BaseModel):
 
         # Predict the noise residual and compute loss
         encoder_hidden_states = encoder_hidden_states.to(dtype=self.unet.dtype)
-        model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+        if down_block_res_samples:
+            down_block_res_samples = [
+                sample.to(dtype=self.unet.dtype) for sample in down_block_res_samples
+            ]
+            mid_block_res_sample = mid_block_res_sample.to(dtype=self.unet.dtype)
+        model_pred = self.unet(
+            noisy_latents,
+            timesteps,
+            encoder_hidden_states,
+            down_block_additional_residuals=down_block_res_samples,
+            mid_block_additional_residual=mid_block_res_sample,
+        ).sample
 
         if self.snr_gamma is None:
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
@@ -237,6 +304,36 @@ class StableDiffision(BaseModel):
 
         return loss
 
+    def run_adapter(self, batch, noisy_latents, timesteps, encoder_hidden_states):
+        # 防止乱序
+        controlnet_cond = sorted(batch.items(), key=lambda x: x[0])
+        controlnet_cond = [v for k, v in controlnet_cond if "image" in k and k != "image_origin"]
+        encoder_hidden_states = encoder_hidden_states.to(dtype=self.adapters[0].dtype)
+        noisy_latents = noisy_latents.to(dtype=self.adapters[0].dtype)
+
+        down_block_res_samples, mid_block_res_sample = None, None
+        for image, adapter in zip(controlnet_cond, self.adapters):
+            image = image.to(dtype=adapter.dtype)
+            down_samples, mid_sample = adapter(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                controlnet_cond=image,
+                return_dict=False,
+            )
+
+            # merge samples
+            if down_block_res_samples is None and mid_block_res_sample is None:
+                down_block_res_samples, mid_block_res_sample = down_samples, mid_sample
+            else:
+                down_block_res_samples = [
+                    samples_prev + samples_curr
+                    for samples_prev, samples_curr in zip(down_block_res_samples, down_samples)
+                ]
+                mid_block_res_sample += mid_sample
+
+        return down_block_res_samples, mid_block_res_sample
+
 
 class SDTrainer(DiffusionTrainer):
     def save_checkpoint(self, file_name: str, save_single_model: bool = True,
@@ -247,6 +344,10 @@ class SDTrainer(DiffusionTrainer):
         if self.model.lora is not None:
             self.model.unet.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
+        if self.model.adapters is not None:
+            for i, adapter in enumerate(self.model.adapters):
+                save_adapter_path = os.path.join(save_path, f"adapter_{i}")
+                adapter.save_pretrained(save_adapter_path)
         else:
             if self.model.text_encoder.__class__.__name__ == "DistributedDataParallel":
                 text_encoder = self.accelerator.unwrap_model(self.model.text_encoder)
@@ -265,3 +366,10 @@ class SDTrainer(DiffusionTrainer):
                 unet=unet,
             )
             pipeline.save_pretrained(os.path.join(save_path, "stable_diffusion"))
+
+    def get_same_dtype_model(self, model, dtype: torch.dtype):
+        """给定model，返回dtype类型的model（需要是trainer内部的model）"""
+        model = self.accelerator.unwrap_model(model)
+        if model.dtype != dtype or (isinstance(model, UNet2DConditionModel) and self.model.config_lora):
+            model = copy.deepcopy(model).to(dtype)
+        return model

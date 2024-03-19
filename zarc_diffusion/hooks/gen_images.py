@@ -1,4 +1,4 @@
-from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, DiffusionPipeline
+from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, DiffusionPipeline, StableDiffusionControlNetPipeline
 from PIL import Image
 import numpy as np
 import os
@@ -10,9 +10,11 @@ import copy
 
 
 class GenHook(HookBase):
-    def __init__(self, save_dir, validation_prompt, num_validation_images=1, seed=0, period=1, merge_result=True):
+    def __init__(self, save_dir, validation_prompt, validation_images=None,
+                 num_validation_images=1, seed=0, period=1, merge_result=True):
         self.save_dir = save_dir
         self.validation_prompt = validation_prompt
+        self.validation_images = validation_images
         self.num_validation_images = num_validation_images
         self.seed = seed
         self.period = period
@@ -25,25 +27,46 @@ class GenHook(HookBase):
                 f"Running validation... \n Generating {self.num_validation_images} images with prompt:"
                 f" {self.validation_prompt}."
             )
-            # create pipeline
-            unet = copy.deepcopy(self.trainer.accelerator.unwrap_model(self.trainer.model.unet))
-            pipeline = DiffusionPipeline.from_pretrained(
-                self.trainer.model.config_diffusion["pretrained_model_name_or_path"],
-                unet=unet.to(torch.float16),
-                torch_dtype=torch.float16,
-                safety_checker=None,
-            )
-            pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
-            pipeline = pipeline.to(self.trainer.accelerator.device, )
-            pipeline.set_progress_bar_config(disable=True)
 
-            # run inference
             generator = torch.Generator(device=self.trainer.accelerator.device)
             if self.seed is not None:
                 generator = generator.manual_seed(self.seed)
 
-            images = pipeline(self.validation_prompt, num_inference_steps=30, generator=generator,
-                              num_images_per_prompt=4, output_type=self.out_type).images
+            # create pipeline
+            unet = self.trainer.get_same_dtype_model(self.trainer.model.unet, dtype=torch.float16)
+            text_encoder = self.trainer.get_same_dtype_model(self.trainer.model.text_encoder, dtype=torch.float16)
+            if self.trainer.model.adapters:
+                controlnets = []
+                for adapter in self.trainer.model.adapters:
+                    controlnets.append(self.trainer.get_same_dtype_model(adapter, dtype=torch.float16))
+                assert self.validation_images, "adapter必须要有image"
+                pipeline = StableDiffusionControlNetPipeline.from_pretrained(
+                    self.trainer.model.config_diffusion["pretrained_model_name_or_path"],
+                    unet=unet.to(torch.float16),
+                    text_encoder=text_encoder.to(torch.float16),
+                    controlnet=controlnets,
+                    torch_dtype=torch.float16,
+                    safety_checker=None,
+                )
+                pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+                pipeline = pipeline.to(self.trainer.accelerator.device, )
+                pipeline.set_progress_bar_config(disable=True)
+                validation_images = [Image.open(image).convert("RGB") for image in self.validation_images]
+                images = pipeline(self.validation_prompt, validation_images, num_inference_steps=20,
+                                  generator=generator, num_images_per_prompt=4, output_type=self.out_type).images
+            else:
+                pipeline = DiffusionPipeline.from_pretrained(
+                    self.trainer.model.config_diffusion["pretrained_model_name_or_path"],
+                    unet=unet.to(torch.float16),
+                    torch_dtype=torch.float16,
+                    safety_checker=None,
+                    )
+                pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+                pipeline = pipeline.to(self.trainer.accelerator.device, )
+                pipeline.set_progress_bar_config(disable=True)
+
+                images = pipeline(self.validation_prompt, num_inference_steps=30, generator=generator,
+                                  num_images_per_prompt=4, output_type=self.out_type).images
             image_dir = os.path.join(self.trainer.work_dir, self.save_dir)
             os.makedirs(image_dir, exist_ok=True)
             if self.merge_result:

@@ -1,5 +1,6 @@
 """用于数据打包，由于生成式训练常常条件非常多，打包数据能更好结构化"""
 import cv2
+import numpy as np
 from torchvision.transforms import v2
 from PIL import Image
 from torch.utils.data import Dataset
@@ -7,6 +8,7 @@ import os
 import pandas as pd
 from glob import glob
 import pickle
+from tqdm import tqdm
 
 
 def get_data(filename):
@@ -105,6 +107,26 @@ def unpacking_dataset(root_src, root_dst, image_ext=".jpg"):
                     f.write(value)
 
 
+def gen_metalist(root: str, meta_path: str):
+    """给出图片&caption文本目录，生成metalist.csv"""
+    data = []
+    match_format = [".png", ".jpg", ".jpeg", ".webp"]
+    caption_list = glob(os.path.join(root, "*.txt"))
+    with tqdm(caption_list) as pbar:
+        for caption_path in pbar:
+            with open(caption_path) as f:
+                caption = f.read()
+            for ext in match_format:
+                image_path = caption_path.replace(".txt", ext)
+                if os.path.exists(image_path):
+                    data.append([caption, image_path])
+                    break
+            else:
+                raise ValueError(f"caption {caption}没有与之匹配的图片")
+    df = pd.DataFrame(data, columns=["caption", "image_origin"])
+    df.to_csv(meta_path, index=False)
+
+
 def vertical2horizontal(root_src, root_dst):
     """
     把数据从图片+metalist.csv的形式转换成层级式形式
@@ -171,6 +193,7 @@ class MetaListDataset(Dataset):
         ).input_ids
 
         item = dict(zip(image_keys, self.transform(image_values)))
+        # 需要再把origin image缩放到-1~1之间
         item["image_origin"] = (item["image_origin"] * 2) - 1
         item["input_ids"] = input_ids
         return item
