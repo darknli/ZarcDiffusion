@@ -2,8 +2,8 @@ from zarc_diffusion.latent_models.stable_diffusion_v1 import StableDiffision, SD
 from zarc_diffusion.utils.dataset import MetaListDataset
 from torch.utils.data import DataLoader
 from transformers import CLIPTokenizer
-from torch_frame import LoggerHook, CheckpointerHook
-from zarc_diffusion.hooks.gen_images import GenHook
+from torch_frame import LoggerHook
+from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook
 import yaml
 import torch
 
@@ -56,9 +56,9 @@ def main():
     hooks = [
         GenHook("valid_images",
                 config_train["validation_prompt"],
-                config_train["validation_images"],
+                config_train.get("validation_images", None),
                 period=config_train["period"]),
-        CheckpointerHook(
+        DiffusersCheckpointerHook(
             period=config_train["period"],
             max_to_keep=config_train["max_to_keep"]),
         LoggerHook(),

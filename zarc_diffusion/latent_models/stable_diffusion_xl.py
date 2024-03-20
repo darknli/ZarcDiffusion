@@ -139,10 +139,10 @@ class StableDiffusionXl(StableDiffision):
 
 
 class SDXLTrainer(SDTrainer):
-    def save_checkpoint(self, file_name: str, save_single_model: bool = True,
+    def save_checkpoint(self, dirname: str, save_single_model: bool = True,
                         print_info: bool = False) -> None:
         """注意，file_name是目录不再是文件"""
-        save_path = os.path.join(self.ckpt_dir, os.path.splitext(file_name)[0])
+        save_path = os.path.join(self.ckpt_dir, dirname)
         os.makedirs(save_path, exist_ok=True)
         if self.model.lora is not None:
             self.model.unet.save_attn_procs(save_path,
