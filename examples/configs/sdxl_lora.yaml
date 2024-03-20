@@ -1,7 +1,9 @@
 model:
   diffusion:
-    pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
+    pretrained_model_name_or_path: 'stabilityai/stable-diffusion-xl-base-1.0'
     train_unet: false
+  vae:
+    vae_dtype: fp32
   lora:
     rank: 32
   noise_offset: 0
@@ -10,10 +12,10 @@ model:
 
 train:
   max_epoch: 1000
-  dataset_path: 'csv路径'
-  size: 512
-  train_batch_size: 16
-  num_workers: 4
+  dataset_path: ''
+  size: 1024
+  train_batch_size: 2
+  num_workers: 2
 
   use_8bit_adam: false
   mixed_precision: fp16
@@ -27,10 +29,11 @@ train:
   lr_scheduler: constant
   lr_warmup_steps: 0
 
-  validation_prompt: '你的prompt'
+  validation_prompt: ''
+  num_validation_images: 2
   max_to_keep: 30
-  period: 10
+  period: 2
 
-  workspace: workspace/log
+  workspace: workspace/sdxl_lora
 
   gradient_accumulation_steps: 1

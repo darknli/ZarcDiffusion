@@ -3,6 +3,8 @@ import torch
 import torch_frame
 import warnings
 import copy
+from accelerate import Accelerator
+from zarc_diffusion.utils.utils_model import str2torch_dtype
 
 
 class BaseModel(torch.nn.Module):
@@ -18,13 +20,20 @@ class BaseModel(torch.nn.Module):
                  noise_offset: float = None
                  ):
         super().__init__()
-        self.device = torch.device("cuda", torch_frame.utils.dist_utils.get_rank())
+        if torch_frame.utils.dist_utils.get_world_size() == 1:
+            self.device = "cuda"
+            self.weight_dtype = torch.float16
+        else:
+            accelerator = Accelerator()
+            self.device = copy.deepcopy(accelerator.device)
+            self.weight_dtype = str2torch_dtype(accelerator.mixed_precision, torch.float16)
+            del accelerator
         self.cache = {}
         self.trainable_params = []
 
         # 保存配置
         self.config_diffusion = copy.deepcopy(config_diffusion)
-        self.config_vae = copy.deepcopy(config_diffusion)
+        self.config_vae = copy.deepcopy(config_vae)
         self.config_scheduler = copy.deepcopy(config_scheduler)
         self.config_lora = copy.deepcopy(config_lora)
         self.config_adapters = copy.deepcopy(config_adapters)
@@ -32,13 +41,13 @@ class BaseModel(torch.nn.Module):
         self.prediction_type = prediction_type
         self.noise_offset = noise_offset
 
-        self.init_diffusion(config_diffusion)
-        self.init_vae(config_vae)
-        self.init_scheduler(config_scheduler)
-        if config_adapters:
-            self.init_adapter(config_adapters)
-        if config_lora:
-            self.init_lora(config_lora)
+        self.init_diffusion(self.config_diffusion)
+        self.init_vae(self.config_vae)
+        self.init_scheduler(self.config_scheduler)
+        if self.config_adapters:
+            self.init_adapter(self.config_adapters)
+        if self.config_lora:
+            self.init_lora(self.config_lora)
         assert len(self.trainable_params) > 0, "No trainable parameters"
 
     @abstractmethod

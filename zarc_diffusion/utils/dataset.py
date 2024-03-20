@@ -197,3 +197,71 @@ class MetaListDataset(Dataset):
         item["image_origin"] = (item["image_origin"] * 2) - 1
         item["input_ids"] = input_ids
         return item
+
+
+class MetaListXLDataset(Dataset):
+    """
+    数据集应该是图片+metalist.csv的格式
+    """
+    def __init__(self, metalist_path: str, tokenizer1, tokenizer2, size):
+        self.df = pd.read_csv(metalist_path)[:400]
+        self.tokenizer1 = tokenizer1
+        self.tokenizer2 = tokenizer2
+        self.transform = v2.Compose(
+            [
+                v2.Resize(size),
+                v2.CenterCrop(size),
+                v2.RandomHorizontalFlip(),
+                v2.ToTensor(),
+            ]
+        )
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        data = self.df.iloc[idx].to_dict()
+        image_keys = []
+        image_values = []
+        captions = []
+        for k, v in data.items():
+            if "image" in k:
+                image_keys.append(k)
+                image_values.append(Image.open(v))
+            elif "caption" in k:
+                captions.append(v)
+        captions_str = ",".join(captions)
+
+        origin_size = np.array(Image.open(data["image_origin"])).shape[:2]
+
+        canny = np.array(image_values[0])
+        canny = cv2.cvtColor(canny, cv2.COLOR_RGB2GRAY)
+        canny = cv2.Canny(canny, 0, 80)
+        canny = Image.fromarray(np.stack([canny, canny, canny], -1))
+        image_values.append(canny)
+        image_keys.append("image_control1")
+        canny = np.array(image_values[0])
+        canny = cv2.cvtColor(canny, cv2.COLOR_RGB2GRAY)
+        canny = cv2.Canny(canny, 0, 80)
+        canny = Image.fromarray(np.stack([canny, canny, canny], -1))
+        image_values.append(canny)
+        image_keys.append("image_control2")
+
+        input_ids1 = self.tokenizer1(
+            captions_str, max_length=self.tokenizer1.model_max_length,
+            padding="max_length", truncation=True, return_tensors="pt"
+        ).input_ids
+
+        input_ids2 = self.tokenizer2(
+            captions_str, max_length=self.tokenizer2.model_max_length,
+            padding="max_length", truncation=True, return_tensors="pt"
+        ).input_ids
+
+        item = dict(zip(image_keys, self.transform(image_values)))
+        # 需要再把origin image缩放到-1~1之间
+        item["image_origin"] = (item["image_origin"] * 2) - 1
+        item["input_ids1"] = input_ids1
+        item["input_ids2"] = input_ids2
+        item["original_sizes"] = origin_size
+        item["crop_top_lefts"] = [0, 0]
+        return item

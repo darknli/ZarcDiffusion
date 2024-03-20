@@ -2,7 +2,8 @@ import os
 import copy
 import torch
 from torch.nn import functional as F
-from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, StableDiffusionPipeline, UNet2DConditionModel
+from diffusers import (AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel,
+                       StableDiffusionControlNetPipeline)
 from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel
 from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
@@ -65,20 +66,24 @@ class StableDiffision(BaseModel):
 
         if "unet_dtype" not in config:
             config["unet_dtype"] = "fp16"
-        self.unet.to(self.device, str2torch_dtype(config["unet_dtype"], default=torch.float16))
+        self.unet.to(self.device, str2torch_dtype(config["unet_dtype"], default=self.weight_dtype))
 
         if "text_encoder_dtype" not in config:
             config["text_encoder_dtype"] = config["unet_dtype"]
-        self.text_encoder.to(self.device, str2torch_dtype(config["text_encoder_dtype"], default=self.unet.dtype))
+        self.text_encoder.to(self.device, str2torch_dtype(config["text_encoder_dtype"], default=self.weight_dtype))
 
         # freeze unet
-        if "train_unet" not in config or not config["train_unet"]:
+        if "train_unet" not in config:
+            config["train_unet"] = False
+        if not config["train_unet"]:
             print("freeze unet")
             self.unet.requires_grad_(False)
         else:
             self.trainable_params = cast_training_params(self.unet)
 
-        if "train_text_encoder" not in config or not config["train_text_encoder"]:
+        if "train_text_encoder" not in config:
+            config["train_text_encoder"] = False
+        if not config["train_text_encoder"]:
             print("freeze text_encoder")
             self.text_encoder.requires_grad_(False)
         else:
@@ -97,7 +102,7 @@ class StableDiffision(BaseModel):
         self.vae = AutoencoderKL.from_pretrained(pretrained_vae_name_or_path, subfolder="vae")
         if "vae_dtype" not in config:
             config["vae_dtype"] = None
-        self.vae.to(self.device, str2torch_dtype(config["vae_dtype"], default=self.unet.dtype))
+        self.vae.to(self.device, str2torch_dtype(config["vae_dtype"], default=self.weight_dtype))
         self.vae.requires_grad_(False)
 
     def init_scheduler(self, config):
@@ -106,7 +111,6 @@ class StableDiffision(BaseModel):
         if "pretrained_model_name_or_path" not in config:
             pretrained_model_name_or_path = self.config_diffusion["pretrained_model_name_or_path"]
             config["pretrained_model_name_or_path"] = pretrained_model_name_or_path
-            self.config_scheduler = config
         pretrained_model_name_or_path = config["pretrained_model_name_or_path"]
         self.noise_scheduler = DDPMScheduler.from_pretrained(pretrained_model_name_or_path, subfolder="scheduler")
 
@@ -177,7 +181,7 @@ class StableDiffision(BaseModel):
                 raise NotImplementedError
             if "adapter_dtype" not in cfg_adapter:
                 cfg_adapter["adapter_dtype"] = None
-            adapter.to(self.device, str2torch_dtype(cfg_adapter["adapter_dtype"], default=self.unet.dtype))
+            adapter.to(self.device, str2torch_dtype(cfg_adapter["adapter_dtype"], default=self.weight_dtype))
 
             if train_adapter:
                 adapter.train()
@@ -229,7 +233,7 @@ class StableDiffision(BaseModel):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         return noise, noisy_latents
 
-    def run_adapter(self, batch, noisy_latents, timesteps, encoder_hidden_states):
+    def run_adapter(self, batch, noisy_latents, timesteps, encoder_hidden_states, **kwargs):
         if not self.adapters:
             return None, None
         # 防止乱序
@@ -311,6 +315,7 @@ class StableDiffision(BaseModel):
             loss = loss.mean()
         return loss
 
+
 class SDTrainer(DiffusionTrainer):
     def save_checkpoint(self, file_name: str, save_single_model: bool = True,
                         print_info: bool = False) -> None:
@@ -325,24 +330,10 @@ class SDTrainer(DiffusionTrainer):
                 if cfg_adapter.get("train_adapter", False):
                     save_adapter_path = os.path.join(save_path, f"adapter_{i}")
                     adapter.save_pretrained(save_adapter_path)
-        else:
-            if self.model.text_encoder.__class__.__name__ == "DistributedDataParallel":
-                text_encoder = self.accelerator.unwrap_model(self.model.text_encoder)
-            else:
-                text_encoder = self.model.text_encoder
-
-            if self.model.unet.__class__.__name__ == "DistributedDataParallel":
-                unet = self.accelerator.unwrap_model(self.model.unet)
-            else:
-                unet = self.model.unet
-
-            pipeline = StableDiffusionPipeline.from_pretrained(
-                self.model.config_diffusion["pretrained_model_name_or_path"],
-                text_encoder=text_encoder,
-                vae=self.model.vae,
-                unet=unet,
-            )
-            pipeline.save_pretrained(os.path.join(save_path, "stable_diffusion"))
+        if self.model.config_diffusion["train_unet"]:
+            self.model.unet.save_pretrained(os.path.join(save_path, "unet"))
+        if self.model.config_diffusion["train_text_encoder"]:
+            self.model.text_encoder.save_pretrained(os.path.join(save_path, "text_encoder"))
 
     def get_same_dtype_model(self, model, dtype: torch.dtype):
         """给定model，返回dtype类型的model（需要是trainer内部的model）"""
@@ -350,3 +341,33 @@ class SDTrainer(DiffusionTrainer):
         if model.dtype != dtype or (isinstance(model, UNet2DConditionModel) and self.model.config_lora):
             model = copy.deepcopy(model).to(dtype)
         return model
+
+    def get_pipeline(self):
+        """给出当前模型组合而成的pipline"""
+        # create pipeline
+        unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
+        text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
+        if self.model.adapters:
+            controlnets = []
+            for adapter in self.model.adapters:
+                controlnets.append(self.get_same_dtype_model(adapter, dtype=torch.float16))
+            pipeline = StableDiffusionControlNetPipeline.from_pretrained(
+                self.model.config_diffusion["pretrained_model_name_or_path"],
+                unet=unet.to(torch.float16),
+                text_encoder=text_encoder.to(torch.float16),
+                controlnet=controlnets,
+                torch_dtype=torch.float16,
+                safety_checker=None,
+            )
+            pipeline = pipeline.to(self.accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
+        else:
+            pipeline = StableDiffusionPipeline.from_pretrained(
+                self.model.config_diffusion["pretrained_model_name_or_path"],
+                unet=unet.to(torch.float16),
+                torch_dtype=torch.float16,
+                safety_checker=None,
+            )
+            pipeline = pipeline.to(self.accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
+        return pipeline

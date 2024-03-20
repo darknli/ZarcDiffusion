@@ -1,5 +1,6 @@
 from typing import Union, List
 import torch
+from torch_frame.utils.dist_utils import get_rank
 
 
 def str2torch_dtype(dtype: str, default=torch.float32) -> torch.dtype:
@@ -31,3 +32,13 @@ def cast_training_params(model: Union[torch.nn.Module, List[torch.nn.Module]],
                 param.data = param.to(dtype)
                 training_params.append(param)
     return training_params
+
+
+def get_gpu_free_memory():
+    """查看gpu剩余显存"""
+    current_device = torch.device(get_rank())
+    memory_total = torch.cuda.get_device_properties(current_device).total_memory
+    memory_uesd = torch.cuda.memory_cached(current_device)
+    memory_free = memory_total - memory_uesd
+    memory_free_g = (memory_free / 1024 / 1024 / 1024)
+    return memory_free_g
