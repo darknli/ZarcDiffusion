@@ -1,4 +1,3 @@
-import warnings
 import os
 import copy
 import torch
@@ -6,7 +5,7 @@ from torch.nn import functional as F
 from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel
-from zarc_diffusion.utils.utils_model import to_model_device, cast_training_params
+from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
 from .base import BaseModel, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
 
@@ -64,31 +63,13 @@ class StableDiffision(BaseModel):
         self.text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder")
         self.unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
 
-        if "unet_dtype" in config:
-            if config["unet_dtype"] == "fp16":
-                self.unet.to(self.device, torch.float16)
-            elif config["unet_dtype"] == "bf16":
-                self.unet.to(self.device, torch.bfloat16)
-            elif config["unet_dtype"] == "fp32":
-                self.unet.to(self.device, torch.float32)
-            else:
-                warnings.warn("unet_dtype config not in (`fp16`, `bf16`), set to fp16")
-                self.unet.to(self.device, torch.float16)
-        else:
-            self.unet.to(self.device, torch.float16)
+        if "unet_dtype" not in config:
+            config["unet_dtype"] = "fp16"
+        self.unet.to(self.device, str2torch_dtype(config["unet_dtype"], default=torch.float16))
 
-        if "text_encoder_dtype" in config:
-            if config["text_encoder_dtype"] == "fp16":
-                self.text_encoder.to(self.device, torch.float16)
-            elif config["text_encoder_dtype"] == "bf16":
-                self.text_encoder.to(self.device, torch.bfloat16)
-            elif config["text_encoder_dtype"] == "fp32":
-                self.text_encoder.to(self.device, torch.float32)
-            else:
-                warnings.warn("text_encoder_dtype config not in (`fp16`, `bf16`), set to fp16")
-                self.text_encoder.to(self.device, torch.float16)
-        else:
-            self.text_encoder.to(self.device, self.unet.dtype)
+        if "text_encoder_dtype" not in config:
+            config["text_encoder_dtype"] = config["unet_dtype"]
+        self.text_encoder.to(self.device, str2torch_dtype(config["text_encoder_dtype"], default=self.unet.dtype))
 
         # freeze unet
         if "train_unet" not in config or not config["train_unet"]:
@@ -114,18 +95,9 @@ class StableDiffision(BaseModel):
             config["pretrained_vae_name_or_path"] = pretrained_vae_name_or_path
             self.config_vae = config
         self.vae = AutoencoderKL.from_pretrained(pretrained_vae_name_or_path, subfolder="vae")
-        if "vae_dtype" in config:
-            if config["vae_dtype"] == "fp16":
-                self.vae.to(self.device, torch.float16)
-            elif config["vae_dtype"] == "bf16":
-                self.vae.to(self.device, torch.bfloat16)
-            elif config["vae_dtype"] == "fp32":
-                self.vae.to(self.device, torch.float32)
-            else:
-                warnings.warn("vae_dtype config not in (`fp16`, `bf16`), set to fp16")
-                self.vae.to(self.device, torch.float16)
-        else:
-            self.vae.to(self.device, torch.float16)
+        if "vae_dtype" not in config:
+            config["vae_dtype"] = None
+        self.vae.to(self.device, str2torch_dtype(config["vae_dtype"], default=self.unet.dtype))
         self.vae.requires_grad_(False)
 
     def init_scheduler(self, config):
@@ -203,19 +175,9 @@ class StableDiffision(BaseModel):
                     print(f"从unet中初始化controlnet")
             else:
                 raise NotImplementedError
-
-            if "adapter_dtype" in cfg_adapter:
-                if cfg_adapter["adapter_dtype"] == "fp16":
-                    adapter.to(self.device, torch.float16)
-                elif cfg_adapter["adapter_dtype"] == "bf16":
-                    adapter.to(self.device, torch.bfloat16)
-                elif cfg_adapter["adapter_dtype"] == "fp32":
-                    adapter.to(self.device, torch.float32)
-                else:
-                    warnings.warn("text_encoder_dtype config not in (`fp16`, `bf16`), set to fp16")
-                    adapter.to(self.device, torch.float16)
-            else:
-                adapter.to(self.device, self.unet.dtype)
+            if "adapter_dtype" not in cfg_adapter:
+                cfg_adapter["adapter_dtype"] = None
+            adapter.to(self.device, str2torch_dtype(cfg_adapter["adapter_dtype"], default=self.unet.dtype))
 
             if train_adapter:
                 adapter.train()
@@ -226,11 +188,34 @@ class StableDiffision(BaseModel):
         self.adapters = adapters
 
     def forward(self, batch):
-        latents = self.vae.encode(batch["image_origin"].to(dtype=self.vae.dtype)).latent_dist.sample()
+        latents = self.run_vae(batch["image_origin"])
+        timesteps = self.run_timesteps(latents.shape[0])
+        noise, noisy_latents = self.sample_noise(latents, timesteps)
+
+        # Get the text embedding for conditioning
+        encoder_hidden_states = self.text_encoder(batch["input_ids"].to(self.device))[0]
+
+        down_block_res_samples, mid_block_res_sample = self.run_adapter(batch, noisy_latents, timesteps,
+                                                                        encoder_hidden_states)
+
+        model_pred = self.run_unet(noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples,
+                                   mid_block_res_sample)
+        loss = self.run_loss(model_pred, noise, latents, timesteps)
+        return loss
+
+    def run_vae(self, pixel_values):
+        latents = self.vae.encode(pixel_values.to(dtype=self.vae.dtype)).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
-
         latents = latents.to(dtype=self.unet.dtype)
+        return latents
 
+    def run_timesteps(self, bsz):
+        # Sample a random timestep for each image
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=self.device)
+        timesteps = timesteps.long()
+        return timesteps
+
+    def sample_noise(self, latents, timesteps):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
         if self.noise_offset:
@@ -239,72 +224,14 @@ class StableDiffision(BaseModel):
                 (latents.shape[0], latents.shape[1], 1, 1), device=latents.device
             )
 
-        bsz = latents.shape[0]
-        # Sample a random timestep for each image
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-        timesteps = timesteps.long()
-
         # Add noise to the latents according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-
-        # Get the text embedding for conditioning
-        encoder_hidden_states = self.text_encoder(batch["input_ids"].to(self.device))[0]
-
-        if self.adapters:
-            down_block_res_samples, mid_block_res_sample = self.run_adapter(batch, noisy_latents, timesteps,
-                                                                            encoder_hidden_states)
-        else:
-            down_block_res_samples, mid_block_res_sample = None, None
-
-        # Get the target for loss depending on the prediction type
-        if self.prediction_type is not None:
-            # set prediction_type of scheduler if defined
-            self.noise_scheduler.register_to_config(prediction_type=self.prediction_type)
-
-        if self.noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif self.noise_scheduler.config.prediction_type == "v_prediction":
-            target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
-        else:
-            raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
-
-        # Predict the noise residual and compute loss
-        encoder_hidden_states = encoder_hidden_states.to(dtype=self.unet.dtype)
-        if down_block_res_samples:
-            down_block_res_samples = [
-                sample.to(dtype=self.unet.dtype) for sample in down_block_res_samples
-            ]
-            mid_block_res_sample = mid_block_res_sample.to(dtype=self.unet.dtype)
-        model_pred = self.unet(
-            noisy_latents,
-            timesteps,
-            encoder_hidden_states,
-            down_block_additional_residuals=down_block_res_samples,
-            mid_block_additional_residual=mid_block_res_sample,
-        ).sample
-
-        if self.snr_gamma is None:
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-        else:
-            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-            # This is discussed in Section 4.2 of the same paper.
-            snr = compute_snr(self.noise_scheduler.alphas_cumprod, timesteps)
-            if self.noise_scheduler.config.prediction_type == "v_prediction":
-                # Velocity objective requires that we add one to SNR values before we divide by them.
-                snr = snr + 1
-            mse_loss_weights = (
-                    torch.stack([snr, self.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
-            )
-
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-            loss = loss.mean()
-
-        return loss
+        return noise, noisy_latents
 
     def run_adapter(self, batch, noisy_latents, timesteps, encoder_hidden_states):
+        if not self.adapters:
+            return None, None
         # 防止乱序
         controlnet_cond = sorted(batch.items(), key=lambda x: x[0])
         controlnet_cond = [v for k, v in controlnet_cond if "image" in k and k != "image_origin"]
@@ -334,6 +261,55 @@ class StableDiffision(BaseModel):
 
         return down_block_res_samples, mid_block_res_sample
 
+    def run_unet(self, noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples, mid_block_res_sample):
+        # Predict the noise residual and compute loss
+        encoder_hidden_states = encoder_hidden_states.to(dtype=self.unet.dtype)
+        if down_block_res_samples:
+            down_block_res_samples = [
+                sample.to(dtype=self.unet.dtype) for sample in down_block_res_samples
+            ]
+            mid_block_res_sample = mid_block_res_sample.to(dtype=self.unet.dtype)
+
+        model_pred = self.unet(
+            noisy_latents,
+            timesteps,
+            encoder_hidden_states,
+            down_block_additional_residuals=down_block_res_samples,
+            mid_block_additional_residual=mid_block_res_sample,
+        ).sample
+        return model_pred
+
+    def run_loss(self, model_pred, noise, latents, timesteps):
+        # Get the target for loss depending on the prediction type
+        if self.prediction_type is not None:
+            # set prediction_type of scheduler if defined
+            self.noise_scheduler.register_to_config(prediction_type=self.prediction_type)
+
+        if self.noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif self.noise_scheduler.config.prediction_type == "v_prediction":
+            target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+
+        if self.snr_gamma is None:
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        else:
+            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+            # This is discussed in Section 4.2 of the same paper.
+            snr = compute_snr(self.noise_scheduler.alphas_cumprod, timesteps)
+            if self.noise_scheduler.config.prediction_type == "v_prediction":
+                # Velocity objective requires that we add one to SNR values before we divide by them.
+                snr = snr + 1
+            mse_loss_weights = (
+                    torch.stack([snr, self.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
+            )
+
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+            loss = loss.mean()
+        return loss
 
 class SDTrainer(DiffusionTrainer):
     def save_checkpoint(self, file_name: str, save_single_model: bool = True,
@@ -345,9 +321,10 @@ class SDTrainer(DiffusionTrainer):
             self.model.unet.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
         if self.model.adapters is not None:
-            for i, adapter in enumerate(self.model.adapters):
-                save_adapter_path = os.path.join(save_path, f"adapter_{i}")
-                adapter.save_pretrained(save_adapter_path)
+            for i, (adapter, cfg_adapter) in enumerate(zip(self.model.adapters, self.model.config_adapters)):
+                if cfg_adapter.get("train_adapter", False):
+                    save_adapter_path = os.path.join(save_path, f"adapter_{i}")
+                    adapter.save_pretrained(save_adapter_path)
         else:
             if self.model.text_encoder.__class__.__name__ == "DistributedDataParallel":
                 text_encoder = self.accelerator.unwrap_model(self.model.text_encoder)

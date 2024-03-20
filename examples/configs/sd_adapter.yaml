@@ -31,7 +31,7 @@ train:
   lr_warmup_steps: 0
 
   validation_prompt: '1girl, bow, brown eyes, brown hair, curtains'
-  validation_image:
+  validation_images:
     - 'valid_contol.png'
   max_to_keep: 3
   period: 50
