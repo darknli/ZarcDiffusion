@@ -17,7 +17,7 @@ class StableDiffusionXl(StableDiffision):
                  config_vae: dict = None,
                  config_scheduler: dict = None,
                  config_lora: dict = None,
-                 config_adapters: dict = None,
+                 config_controls: dict = None,
                  prediction_type: str = None,
                  snr_gamma: float = None,
                  noise_offset: float = None,
@@ -25,7 +25,7 @@ class StableDiffusionXl(StableDiffision):
 
         self.text_encoder1 = None
         self.text_encoder2 = None
-        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_adapters, prediction_type,
+        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_controls, prediction_type,
                          snr_gamma, noise_offset)
         # sd_v1的text_encoder被sdxl的text_encoder1和text_encoder2代替
         del self.text_encoder
@@ -73,7 +73,7 @@ class StableDiffusionXl(StableDiffision):
         prompt_embeds, unet_added_conditions = self.run_text_encoder(batch["input_ids1"], batch["input_ids2"],
                                                                      batch["original_sizes"], batch["crop_top_lefts"])
 
-        down_block_res_samples, mid_block_res_sample = self.run_adapter(batch, noisy_latents, timesteps,
+        down_block_res_samples, mid_block_res_sample = self.run_control(batch, noisy_latents, timesteps,
                                                                         prompt_embeds)
 
         model_pred = self.run_unet(noisy_latents, timesteps, prompt_embeds, down_block_res_samples,
@@ -147,11 +147,11 @@ class SDXLTrainer(SDTrainer):
         if self.model.lora is not None:
             self.model.unet.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
-        if self.model.adapters is not None:
-            for i, (adapter, cfg_adapter) in enumerate(zip(self.model.adapters, self.model.config_adapters)):
-                if cfg_adapter.get("train_adapter", False):
-                    save_adapter_path = os.path.join(save_path, f"adapter_{i}")
-                    adapter.save_pretrained(save_adapter_path)
+        if self.model.controls is not None:
+            for i, (control, cfg_control) in enumerate(zip(self.model.controls, self.model.config_controls)):
+                if cfg_control.get("train_control", False):
+                    save_control_path = os.path.join(save_path, f"control_{i}")
+                    control.save_pretrained(save_control_path)
         if self.model.config_diffusion["train_unet"]:
             self.model.unet.save_pretrained(os.path.join(save_path, "unet"))
         if self.model.config_diffusion["train_text_encoder"]:
@@ -164,10 +164,10 @@ class SDXLTrainer(SDTrainer):
         unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
         text_encoder1 = self.get_same_dtype_model(self.model.text_encoder1, dtype=torch.float16)
         text_encoder2 = self.get_same_dtype_model(self.model.text_encoder2, dtype=torch.float16)
-        if self.model.adapters:
+        if self.model.controls:
             controlnets = []
-            for adapter in self.model.adapters:
-                controlnets.append(self.get_same_dtype_model(adapter, dtype=torch.float16))
+            for control in self.model.controls:
+                controlnets.append(self.get_same_dtype_model(control, dtype=torch.float16))
             pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
                 unet=unet.to(torch.float16),

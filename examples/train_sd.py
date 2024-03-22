@@ -14,11 +14,11 @@ def main():
     config_model = config["model"]
     config_diffusion = config_model["diffusion"]
     config_lora = config_model.get("lora", None)
-    config_adapters = config_model.get("adapters", None)
+    config_controls = config_model.get("controls", None)
     config_train = config["train"]
     model = StableDiffision(config_diffusion,
                             config_lora=config_lora,
-                            config_adapters=config_adapters,
+                            config_controls=config_controls,
                             snr_gamma=config_model.get("snr_gamma", None),
                             noise_offset=config_model.get("noise_offset", None))
     tokenizer = CLIPTokenizer.from_pretrained(

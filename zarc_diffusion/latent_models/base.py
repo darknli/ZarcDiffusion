@@ -14,7 +14,7 @@ class BaseModel(torch.nn.Module):
                  config_vae: dict,
                  config_scheduler: dict,
                  config_lora: dict = None,
-                 config_adapters: dict = None,
+                 config_controls: dict = None,
                  prediction_type: str = None,
                  snr_gamma: float = None,
                  noise_offset: float = None
@@ -36,7 +36,7 @@ class BaseModel(torch.nn.Module):
         self.config_vae = copy.deepcopy(config_vae)
         self.config_scheduler = copy.deepcopy(config_scheduler)
         self.config_lora = copy.deepcopy(config_lora)
-        self.config_adapters = copy.deepcopy(config_adapters)
+        self.config_controls = copy.deepcopy(config_controls)
         self.snr_gamma = snr_gamma
         self.prediction_type = prediction_type
         self.noise_offset = noise_offset
@@ -44,8 +44,8 @@ class BaseModel(torch.nn.Module):
         self.init_diffusion(self.config_diffusion)
         self.init_vae(self.config_vae)
         self.init_scheduler(self.config_scheduler)
-        if self.config_adapters:
-            self.init_adapter(self.config_adapters)
+        if self.config_controls:
+            self.init_controlnet(self.config_controls)
         if self.config_lora:
             self.init_lora(self.config_lora)
         assert len(self.trainable_params) > 0, "No trainable parameters"
@@ -65,7 +65,7 @@ class BaseModel(torch.nn.Module):
     def init_lora(self, config):
         ...
 
-    def init_adapter(self, config):
+    def init_controlnet(self, config):
         ...
 
     def save(self, *args):

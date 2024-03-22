@@ -2,10 +2,10 @@ model:
   diffusion:
     pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
     train_unet: false
-  adapters:
-    - adapter_method: control
-      pretrained_adapter_name_or_path: ""
-      train_adapter: true
+  controls:
+    - image_key: image_control1
+      pretrained_control_name_or_path: "lllyasviel/sd-controlnet-canny"
+      train_control: true
   noise_offset: 0
   prediction_type: null
   snr_gamma: 5.0
@@ -34,7 +34,7 @@ train:
   validation_images:
     - 'valid_contol.png'
   max_to_keep: 3
-  period: 50
+  period: 5
 
   workspace: workspace/contolnet
 

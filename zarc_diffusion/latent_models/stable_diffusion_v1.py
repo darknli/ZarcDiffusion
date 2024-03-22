@@ -30,11 +30,11 @@ class StableDiffision(BaseModel):
         * pretrained_model_name_or_path: Optional[str]. 不做特别设置则保持和`config_diffusion`一致
     config_lora : dict, default None. lora设置
         * rank: int. lora的rank
-    config_adapters : List[dict], default None. 支持多个adapters!!!，每个dict类型的adapter配置如下：
-        * train_adapter: Optional[bool], default False.
-        * adapter_method: str. 目前只支持control, 未来也会支持t2i-adapter和ip-adapter
-        * pretrained_adapter_name_or_path: Optional[str]. 同diffusers一致，如果不做特别设置则不使用任何预训练模型
-        * adapter_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
+    config_controls : List[dict], default None. 支持多个controls!!!，每个dict类型的control配置如下：
+        * image_key: str. control_image在数据对应的key, 需要有指定
+        * train_control: Optional[bool], default False.
+        * pretrained_control_name_or_path: Optional[str]. 同diffusers一致，如果不做特别设置则不使用任何预训练模型
+        * control_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
     prediction_type : str, default None. 'epsilon' or 'v_prediction' or leave `None`
     snr_gamma: float, default None. 用于加速收敛, https://arxiv.org/abs/2303.09556
     noise_offset: float, default None. 参考https://www.crosslabs.org//blog/diffusion-with-offset-noise
@@ -45,7 +45,7 @@ class StableDiffision(BaseModel):
                  config_vae: dict = None,
                  config_scheduler: dict = None,
                  config_lora: dict = None,
-                 config_adapters: dict = None,
+                 config_controls: dict = None,
                  prediction_type: str = None,
                  snr_gamma: float = None,
                  noise_offset: float = None,
@@ -55,8 +55,8 @@ class StableDiffision(BaseModel):
         self.vae = None
         self.noise_scheduler = None
         self.lora = None
-        self.adapters = None
-        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_adapters, prediction_type,
+        self.controls = None
+        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_controls, prediction_type,
                          snr_gamma, noise_offset)
 
     def init_diffusion(self, config):
@@ -158,38 +158,35 @@ class StableDiffision(BaseModel):
         self.lora = unet_lora_parameters
         self.trainable_params.extend(unet_lora_parameters)
 
-    def init_adapter(self, config):
+    def init_controlnet(self, config):
         if config is None:
             config = []
-        adapters = []
-        for cfg_adapter in config:
-            train_adapter = cfg_adapter.get("train_adapter", False)
-            pretrained_adapter_name_or_path = cfg_adapter.get("pretrained_adapter_name_or_path", None)
-            if not (train_adapter or pretrained_adapter_name_or_path):
-                raise ValueError("没有使用预训练参数的adapter需要训练!")
-            if "train_unet" in self.config_diffusion and self.config_diffusion["train_unet"] and train_adapter:
-                raise ValueError("通常不会既训练unet又训练adapter!")
-            if cfg_adapter["adapter_method"] == "control":
-                from diffusers import ControlNetModel
-                if pretrained_adapter_name_or_path:
-                    adapter = ControlNetModel.from_pretrained(pretrained_adapter_name_or_path)
-                    print(f"controlnet加载{pretrained_adapter_name_or_path}权重")
-                else:
-                    adapter = ControlNetModel.from_unet(self.unet)
-                    print(f"从unet中初始化controlnet")
+        controlnets = []
+        from diffusers import ControlNetModel
+        for cfg_control in config:
+            train_control = cfg_control.get("train_control", False)
+            pretrained_control_name_or_path = cfg_control.get("pretrained_control_name_or_path", None)
+            if not (train_control or pretrained_control_name_or_path):
+                raise ValueError("没有使用预训练参数的control需要训练!")
+            if "train_unet" in self.config_diffusion and self.config_diffusion["train_unet"] and train_control:
+                raise ValueError("通常不会既训练unet又训练control!")
+            if pretrained_control_name_or_path:
+                control = ControlNetModel.from_pretrained(pretrained_control_name_or_path)
+                print(f"controlnet加载{pretrained_control_name_or_path}权重")
             else:
-                raise NotImplementedError
-            if "adapter_dtype" not in cfg_adapter:
-                cfg_adapter["adapter_dtype"] = None
-            adapter.to(self.device, str2torch_dtype(cfg_adapter["adapter_dtype"], default=self.weight_dtype))
+                control = ControlNetModel.from_unet(self.unet)
+                print(f"从unet中初始化controlnet")
+            if "control_dtype" not in cfg_control:
+                cfg_control["control_dtype"] = None
+            control.to(self.device, str2torch_dtype(cfg_control["control_dtype"], default=self.weight_dtype))
 
-            if train_adapter:
-                adapter.train()
-                self.trainable_params.extend(cast_training_params(adapter))
+            if train_control:
+                control.train()
+                self.trainable_params.extend(cast_training_params(control))
             else:
-                adapter.requires_grad_(False)
-            adapters.append(adapter)
-        self.adapters = adapters
+                control.requires_grad_(False)
+            controlnets.append(control)
+        self.controls = controlnets
 
     def forward(self, batch):
         latents = self.run_vae(batch["image_origin"])
@@ -199,7 +196,7 @@ class StableDiffision(BaseModel):
         # Get the text embedding for conditioning
         encoder_hidden_states = self.text_encoder(batch["input_ids"].to(self.device))[0]
 
-        down_block_res_samples, mid_block_res_sample = self.run_adapter(batch, noisy_latents, timesteps,
+        down_block_res_samples, mid_block_res_sample = self.run_control(batch, noisy_latents, timesteps,
                                                                         encoder_hidden_states)
 
         model_pred = self.run_unet(noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples,
@@ -233,19 +230,20 @@ class StableDiffision(BaseModel):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         return noise, noisy_latents
 
-    def run_adapter(self, batch, noisy_latents, timesteps, encoder_hidden_states, **kwargs):
-        if not self.adapters:
+    def run_control(self, batch, noisy_latents, timesteps, encoder_hidden_states, **kwargs):
+        if not self.controls:
             return None, None
         # 防止乱序
         controlnet_cond = sorted(batch.items(), key=lambda x: x[0])
         controlnet_cond = [v for k, v in controlnet_cond if "image" in k and k != "image_origin"]
-        encoder_hidden_states = encoder_hidden_states.to(dtype=self.adapters[0].dtype)
-        noisy_latents = noisy_latents.to(dtype=self.adapters[0].dtype)
+        encoder_hidden_states = encoder_hidden_states.to(dtype=self.controls[0].dtype)
+        noisy_latents = noisy_latents.to(dtype=self.controls[0].dtype)
 
         down_block_res_samples, mid_block_res_sample = None, None
-        for image, adapter in zip(controlnet_cond, self.adapters):
-            image = image.to(dtype=adapter.dtype)
-            down_samples, mid_sample = adapter(
+        for cfg, control in zip(self.config_controls, self.controls):
+            image = batch[cfg["image_key"]]
+            image = image.to(dtype=control.dtype)
+            down_samples, mid_sample = control(
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states=encoder_hidden_states,
@@ -325,11 +323,11 @@ class SDTrainer(DiffusionTrainer):
         if self.model.lora is not None:
             self.model.unet.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
-        if self.model.adapters is not None:
-            for i, (adapter, cfg_adapter) in enumerate(zip(self.model.adapters, self.model.config_adapters)):
-                if cfg_adapter.get("train_adapter", False):
-                    save_adapter_path = os.path.join(save_path, f"adapter_{i}")
-                    adapter.save_pretrained(save_adapter_path)
+        if self.model.controls is not None:
+            for i, (control, cfg_control) in enumerate(zip(self.model.controls, self.model.config_controls)):
+                if cfg_control.get("train_control", False):
+                    save_control_path = os.path.join(save_path, f"control_{i}")
+                    control.save_pretrained(save_control_path)
         if self.model.config_diffusion["train_unet"]:
             self.model.unet.save_pretrained(os.path.join(save_path, "unet"))
         if self.model.config_diffusion["train_text_encoder"]:
@@ -347,10 +345,10 @@ class SDTrainer(DiffusionTrainer):
         # create pipeline
         unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
         text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
-        if self.model.adapters:
+        if self.model.controls:
             controlnets = []
-            for adapter in self.model.adapters:
-                controlnets.append(self.get_same_dtype_model(adapter, dtype=torch.float16))
+            for control in self.model.controls:
+                controlnets.append(self.get_same_dtype_model(control, dtype=torch.float16))
             pipeline = StableDiffusionControlNetPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
                 unet=unet.to(torch.float16),
