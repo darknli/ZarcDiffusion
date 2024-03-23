@@ -1,7 +1,8 @@
 import torch
 import os
 from transformers import CLIPTextModel, CLIPTextModelWithProjection
-from diffusers import UNet2DConditionModel, StableDiffusionXLControlNetPipeline, StableDiffusionXLPipeline
+from diffusers import (UNet2DConditionModel, StableDiffusionXLControlNetPipeline, StableDiffusionXLPipeline,
+                       UniPCMultistepScheduler)
 from .stable_diffusion_v1 import StableDiffision, SDTrainer
 from zarc_diffusion.utils.utils_model import cast_training_params, str2torch_dtype
 
@@ -160,6 +161,8 @@ class SDXLTrainer(SDTrainer):
 
     def get_pipeline(self):
         """给出当前模型组合而成的pipline"""
+        torch.cuda.empty_cache()
+
         # create pipeline
         unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
         text_encoder1 = self.get_same_dtype_model(self.model.text_encoder1, dtype=torch.float16)
@@ -175,7 +178,6 @@ class SDXLTrainer(SDTrainer):
                 text_encoder_2=text_encoder2.to(torch.float16),
                 controlnet=controlnets,
                 torch_dtype=torch.float16,
-                safety_checker=None,
             )
             pipeline = pipeline.to(self.accelerator.device)
             pipeline.set_progress_bar_config(disable=True)
@@ -186,8 +188,8 @@ class SDXLTrainer(SDTrainer):
                 text_encoder=text_encoder1.to(torch.float16),
                 text_encoder_2=text_encoder2.to(torch.float16),
                 torch_dtype=torch.float16,
-                safety_checker=None,
             )
             pipeline = pipeline.to(self.accelerator.device)
             pipeline.set_progress_bar_config(disable=True)
+        pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
         return pipeline

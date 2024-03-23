@@ -25,6 +25,7 @@ setuptools.setup(
     ],
     install_requires=[  # 该库需要的依前库
         "git+https://github.com/darknli/Pytorch-Frame.git",
+        "Pillow"
     ],
     python_requires='>=3.6',
 )

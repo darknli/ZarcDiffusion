@@ -9,9 +9,10 @@ import pandas as pd
 from glob import glob
 import pickle
 from tqdm import tqdm
+from typing import Callable, Union
 
 
-def get_data(filename):
+def get_data(filename: str) -> Union[np.ndarray, str]:
     if "image" in filename:
         data = cv2.cvtColor(cv2.imread(filename), cv2.COLOR_BGR2RGB)
     elif "txt" in filename:
@@ -22,7 +23,7 @@ def get_data(filename):
     return data
 
 
-def packing_dataset(root_src, root_dst):
+def packing_dataset(root_src: str, root_dst: str):
     """
     将零碎文件打包成高度整合的文件，注意：这种方式会占用大量硬盘容量
     1. 以文件名来决定数据类型
@@ -59,7 +60,7 @@ def packing_dataset(root_src, root_dst):
             pickle.dump(item, f)
 
 
-def packing_addition_data(root_add, root_origin,
+def packing_addition_data(root_add: str, root_origin: str,
                           trict_match: bool = True, overwrite: bool = False):
     """
     将新的meta数据打包到已有的数据集中，相当于是把root_origin文件夹下每个文件都添加一个新的condition
@@ -92,7 +93,7 @@ def packing_addition_data(root_add, root_origin,
             pickle.dump(data_origin, f)
 
 
-def unpacking_dataset(root_src, root_dst, image_ext=".jpg"):
+def unpacking_dataset(root_src: str, root_dst: str, image_ext: str = ".jpg"):
     """
     packing_dataset函数的逆输出版本
     """
@@ -138,7 +139,7 @@ class PackageDataset(Dataset):
     """
     数据集应该是packing_dataset函数处理过的格式
     """
-    def __init__(self, root, lambda_func):
+    def __init__(self, root: str, lambda_func: Callable):
         self.data_list = []
         for filename in glob(os.path.join(root, "*.pkl")):
             with open(filename, "rb") as f:
@@ -157,111 +158,16 @@ class PackageDataset(Dataset):
 
 class MetaListDataset(Dataset):
     """
-    数据集应该是图片+metalist.csv的格式
+    数据集应该是packing_dataset函数处理过的格式
     """
-    def __init__(self, metalist_path: str, tokenizer, size):
+    def __init__(self, metalist_path: str, lambda_func: Callable):
         self.df = pd.read_csv(metalist_path)
-        self.tokenizer = tokenizer
-        self.transform = v2.Compose(
-            [
-                v2.Resize(size),
-                v2.CenterCrop(size),
-                v2.RandomHorizontalFlip(),
-                v2.ToTensor(),
-            ]
-        )
+        self.lambda_func = lambda_func
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         data = self.df.iloc[idx].to_dict()
-        image_keys = []
-        image_values = []
-        captions = []
-        for k, v in data.items():
-            if "image" in k:
-                image_keys.append(k)
-                image_values.append(Image.open(v))
-            elif "caption" in k:
-                captions.append(v)
-        captions_str = ",".join(captions)
-
-        input_ids = self.tokenizer(
-            captions_str, max_length=self.tokenizer.model_max_length,
-            padding="max_length", truncation=True, return_tensors="pt"
-        ).input_ids
-
-        item = dict(zip(image_keys, self.transform(image_values)))
-        # 需要再把origin image缩放到-1~1之间
-        item["image_origin"] = (item["image_origin"] * 2) - 1
-        item["input_ids"] = input_ids
-        return item
-
-
-class MetaListXLDataset(Dataset):
-    """
-    数据集应该是图片+metalist.csv的格式
-    """
-    def __init__(self, metalist_path: str, tokenizer1, tokenizer2, size):
-        self.df = pd.read_csv(metalist_path)[:400]
-        self.tokenizer1 = tokenizer1
-        self.tokenizer2 = tokenizer2
-        self.transform = v2.Compose(
-            [
-                v2.Resize(size),
-                v2.CenterCrop(size),
-                v2.RandomHorizontalFlip(),
-                v2.ToTensor(),
-            ]
-        )
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        data = self.df.iloc[idx].to_dict()
-        image_keys = []
-        image_values = []
-        captions = []
-        for k, v in data.items():
-            if "image" in k:
-                image_keys.append(k)
-                image_values.append(Image.open(v))
-            elif "caption" in k:
-                captions.append(v)
-        captions_str = ",".join(captions)
-
-        origin_size = np.array(Image.open(data["image_origin"])).shape[:2]
-
-        canny = np.array(image_values[0])
-        canny = cv2.cvtColor(canny, cv2.COLOR_RGB2GRAY)
-        canny = cv2.Canny(canny, 0, 80)
-        canny = Image.fromarray(np.stack([canny, canny, canny], -1))
-        image_values.append(canny)
-        image_keys.append("image_control1")
-        canny = np.array(image_values[0])
-        canny = cv2.cvtColor(canny, cv2.COLOR_RGB2GRAY)
-        canny = cv2.Canny(canny, 0, 80)
-        canny = Image.fromarray(np.stack([canny, canny, canny], -1))
-        image_values.append(canny)
-        image_keys.append("image_control2")
-
-        input_ids1 = self.tokenizer1(
-            captions_str, max_length=self.tokenizer1.model_max_length,
-            padding="max_length", truncation=True, return_tensors="pt"
-        ).input_ids
-
-        input_ids2 = self.tokenizer2(
-            captions_str, max_length=self.tokenizer2.model_max_length,
-            padding="max_length", truncation=True, return_tensors="pt"
-        ).input_ids
-
-        item = dict(zip(image_keys, self.transform(image_values)))
-        # 需要再把origin image缩放到-1~1之间
-        item["image_origin"] = (item["image_origin"] * 2) - 1
-        item["input_ids1"] = input_ids1
-        item["input_ids2"] = input_ids2
-        item["original_sizes"] = origin_size
-        item["crop_top_lefts"] = [0, 0]
+        item = self.lambda_func(data)
         return item

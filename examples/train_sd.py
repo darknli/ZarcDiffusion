@@ -1,5 +1,5 @@
 from zarc_diffusion.latent_models.stable_diffusion_v1 import StableDiffision, SDTrainer
-from zarc_diffusion.utils.dataset import MetaListDataset
+from zarc_diffusion.utils import MetaListDataset, SDOperator
 from torch.utils.data import DataLoader
 from transformers import CLIPTokenizer
 from torch_frame import LoggerHook
@@ -21,11 +21,9 @@ def main():
                             config_controls=config_controls,
                             snr_gamma=config_model.get("snr_gamma", None),
                             noise_offset=config_model.get("noise_offset", None))
-    tokenizer = CLIPTokenizer.from_pretrained(
-        config_diffusion["pretrained_model_name_or_path"], subfolder="tokenizer"
-    )
-
-    train_dataset = MetaListDataset(config_train["dataset_path"], tokenizer, config_train["size"])
+    sd_opt = SDOperator(tokenizer_name_or_path=config_diffusion["pretrained_model_name_or_path"],
+                        size=config_train["size"])
+    train_dataset = MetaListDataset(config_train["dataset_path"], sd_opt)
     train_loader = DataLoader(train_dataset,
                               shuffle=True,
                               persistent_workers=True,
