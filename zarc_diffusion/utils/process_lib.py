@@ -1,6 +1,7 @@
 """放一些数据处理"""
+import random
 from torchvision.transforms import v2
-from transformers import CLIPTokenizer, AutoTokenizer
+from transformers import CLIPTokenizer, AutoTokenizer, CLIPImageProcessor
 from PIL import Image
 from typing import Tuple
 import numpy as np
@@ -26,6 +27,20 @@ class NormalImageOperator:
         return data_new
 
 
+class IPOprator:
+    def __init__(self, drop_rate=0.1):
+        self.drop_rate = drop_rate
+        self.clip_image_processor = CLIPImageProcessor()
+
+    def __call__(self, image):
+        clip_image = self.clip_image_processor(images=image, return_tensors="pt").pixel_values
+        item = {
+            "ip_adapter_image": clip_image[0],
+            "ip_adapter_no_drop": int(random.random() > self.drop_rate)
+        }
+        return item
+
+
 class SDOperator:
     def __init__(self,
                  tokenizer: CLIPTokenizer = None,
@@ -43,9 +58,11 @@ class SDOperator:
         self.image_opt = NormalImageOperator(size=size)
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
+        self.ip_opt = IPOprator()
 
     def __call__(self, data):
-        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k}
+        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
+        ip_adapter_dict = self.ip_opt(data_images["image_origin"])
         data_images = self.image_opt(data_images)
         data_images["image_origin"] = self.normalize(data_images["image_origin"])
 
@@ -56,6 +73,7 @@ class SDOperator:
 
         output = {"input_ids": input_ids}
         output.update(data_images)
+        output.update(ip_adapter_dict)
         return output
 
 
@@ -80,7 +98,7 @@ class SDXLOperator:
         self.key_caption = key_caption
 
     def __call__(self, data):
-        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k}
+        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
         origin_size = np.array(Image.open(data["image_origin"])).shape[:2]
         data_images = self.image_opt(data_images)
         data_images["image_origin"] = self.normalize(data_images["image_origin"])

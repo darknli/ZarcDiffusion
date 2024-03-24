@@ -18,6 +18,7 @@ class StableDiffusionXl(StableDiffision):
                  config_vae: dict = None,
                  config_scheduler: dict = None,
                  config_lora: dict = None,
+                 config_ip_adapter: dict = None,
                  config_controls: dict = None,
                  prediction_type: str = None,
                  snr_gamma: float = None,
@@ -26,8 +27,8 @@ class StableDiffusionXl(StableDiffision):
 
         self.text_encoder1 = None
         self.text_encoder2 = None
-        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_controls, prediction_type,
-                         snr_gamma, noise_offset)
+        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_ip_adapter,
+                         config_controls, prediction_type, snr_gamma, noise_offset)
         # sd_v1的text_encoder被sdxl的text_encoder1和text_encoder2代替
         del self.text_encoder
 

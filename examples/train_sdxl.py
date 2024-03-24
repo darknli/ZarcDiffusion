@@ -1,7 +1,6 @@
-from zarc_diffusion.latent_models.stable_diffusion_xl import StableDiffusionXl, SDXLTrainer
+from zarc_diffusion.models.latent_models import StableDiffusionXl, SDXLTrainer
 from zarc_diffusion.utils import MetaListDataset, SDXLOperator
 from torch.utils.data import DataLoader
-from transformers import CLIPTokenizer
 from torch_frame import LoggerHook
 from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook
 import yaml
@@ -15,11 +14,13 @@ def main():
     config_diffusion = config_model["diffusion"]
     config_vae = config_model["vae"]
     config_lora = config_model.get("lora", None)
+    config_ip_adapter = config_model.get("ip_adapter", None)
     config_controls = config_model.get("controls", None)
     config_train = config["train"]
     model = StableDiffusionXl(config_diffusion,
                               config_vae=config_vae,
                               config_lora=config_lora,
+                              config_ip_adapter=config_ip_adapter,
                               config_controls=config_controls,
                               snr_gamma=config_model.get("snr_gamma", None),
                               noise_offset=config_model.get("noise_offset", None))

@@ -7,6 +7,7 @@ from diffusers import (AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UN
 from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel
 from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
+from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
 from .base import BaseModel, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
 
@@ -30,6 +31,11 @@ class StableDiffision(BaseModel):
         * pretrained_model_name_or_path: Optional[str]. 不做特别设置则保持和`config_diffusion`一致
     config_lora : dict, default None. lora设置
         * rank: int. lora的rank
+    config_ip_adapter : dict, default None. ip-adapter设置
+        * image_encoder_path: str. image_encoder预训练模型路径
+        * train_ip_adapter: Optional[bool], default False. 是否训练ip_adapter
+        * pretrain_model: Optional[str]. ip-adapter预训练模型
+        * ip_adapter_dtype: Optional[str], default fp16. {'fp16', 'bf16', 'fp32'}
     config_controls : List[dict], default None. 支持多个controls!!!，每个dict类型的control配置如下：
         * image_key: str. control_image在数据对应的key, 需要有指定
         * train_control: Optional[bool], default False.
@@ -45,6 +51,7 @@ class StableDiffision(BaseModel):
                  config_vae: dict = None,
                  config_scheduler: dict = None,
                  config_lora: dict = None,
+                 config_ip_adapter: dict = None,
                  config_controls: dict = None,
                  prediction_type: str = None,
                  snr_gamma: float = None,
@@ -55,9 +62,11 @@ class StableDiffision(BaseModel):
         self.vae = None
         self.noise_scheduler = None
         self.lora = None
+        self.ip_encoder = None
+        self.adapter_modules = None
         self.controls = None
-        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_controls, prediction_type,
-                         snr_gamma, noise_offset)
+        super().__init__(config_diffusion, config_vae, config_scheduler, config_lora, config_ip_adapter,
+                         config_controls, prediction_type, snr_gamma, noise_offset)
 
     def init_diffusion(self, config):
         pretrained_model_name_or_path = config["pretrained_model_name_or_path"]
@@ -158,6 +167,67 @@ class StableDiffision(BaseModel):
         self.lora = unet_lora_parameters
         self.trainable_params.extend(unet_lora_parameters)
 
+    def init_ip_adapter(self, config):
+        try:
+            from zarc_diffusion.models.ip_adapter.utils import is_torch2_available
+        except ImportError:
+            raise ImportError("需要安装ip_adapter，pip install git+https://github.com/tencent-ailab/IP-Adapter.git")
+        if is_torch2_available():
+            from zarc_diffusion.models.ip_adapter.attention_processor import IPAttnProcessor2_0 as IPAttnProcessor, \
+                AttnProcessor2_0 as AttnProcessor
+        else:
+            from zarc_diffusion.models.ip_adapter.attention_processor import IPAttnProcessor, AttnProcessor
+        assert not self.config_lora, "暂不支持使用ip-adapter时训练lora"
+        image_encoder_path = config["image_encoder_path"]
+        self.ip_encoder = IPAdaperEncoder(image_encoder_path=image_encoder_path,
+                                          cross_attention_dim=self.unet.config.cross_attention_dim)
+        if "ip_adapter_dtype" not in config:
+            config["ip_adapter_dtype"] = None
+        self.ip_encoder.to(self.device, str2torch_dtype(config["ip_adapter_dtype"], default=self.weight_dtype))
+
+        # init adapter modules
+        attn_procs = {}
+        unet_sd = self.unet.state_dict()
+        for name in self.unet.attn_processors.keys():
+            cross_attention_dim = None if name.endswith("attn1.processor") else self.unet.config.cross_attention_dim
+            if name.startswith("mid_block"):
+                hidden_size = self.unet.config.block_out_channels[-1]
+            elif name.startswith("up_blocks"):
+                block_id = int(name[len("up_blocks.")])
+                hidden_size = list(reversed(self.unet.config.block_out_channels))[block_id]
+            elif name.startswith("down_blocks"):
+                block_id = int(name[len("down_blocks.")])
+                hidden_size = self.unet.config.block_out_channels[block_id]
+            if cross_attention_dim is None:
+                attn_procs[name] = AttnProcessor()
+            else:
+                layer_name = name.split(".processor")[0]
+                weights = {
+                    "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
+                    "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
+                }
+                attn_procs[name] = IPAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+                attn_procs[name].load_state_dict(weights)
+        self.unet.set_attn_processor(attn_procs)
+        adapter_modules = torch.nn.ModuleList(self.unet.attn_processors.values())
+        adapter_modules.to(self.device, str2torch_dtype(config["ip_adapter_dtype"], default=self.weight_dtype))
+
+        if "pretrain_model" in config and config["pretrain_model"]:
+            pretrain_model = config["pretrain_model"]
+            state_dict = torch.load(pretrain_model, map_location=self.device)
+            self.image_proj_model.load_state_dict(state_dict["image_proj"], strict=True)
+            self.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=True)
+
+        if "train_ip_adapter" not in config:
+            config["train_ip_adapter"] = False
+        if not config["train_ip_adapter"]:
+            print("freeze train_ip_adapter")
+            self.ip_encoder.requires_grad_(False)
+            adapter_modules.requires_grad_(False)
+        else:
+            self.trainable_params.extend(cast_training_params([self.ip_encoder.image_proj_model, adapter_modules]))
+        self.adapter_modules = adapter_modules
+
     def init_controlnet(self, config):
         if config is None:
             config = []
@@ -198,6 +268,10 @@ class StableDiffision(BaseModel):
 
         down_block_res_samples, mid_block_res_sample = self.run_control(batch, noisy_latents, timesteps,
                                                                         encoder_hidden_states)
+
+        if self.ip_encoder:
+            encoder_hidden_states = self.ip_encoder(
+                batch["ip_adapter_image"], encoder_hidden_states, no_drop_arr=batch["ip_adapter_no_drop"])
 
         model_pred = self.run_unet(noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples,
                                    mid_block_res_sample)
@@ -323,6 +397,15 @@ class SDTrainer(DiffusionTrainer):
         if self.model.lora is not None:
             self.model.unet.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
+        if self.model.ip_encoder is not None:
+            image_proj_model = self.model.ip_encoder.image_proj_model
+            torch.save(
+                {
+                    "image_proj": image_proj_model.state_dict(),
+                    "ip_adapter": self.model.adapter_modules.state_dict()
+                },
+                os.path.join(save_path, "ip-adapter.pth")
+            )
         if self.model.controls is not None:
             for i, (control, cfg_control) in enumerate(zip(self.model.controls, self.model.config_controls)):
                 if cfg_control.get("train_control", False):
@@ -336,7 +419,8 @@ class SDTrainer(DiffusionTrainer):
     def get_same_dtype_model(self, model, dtype: torch.dtype):
         """给定model，返回dtype类型的model（需要是trainer内部的model）"""
         model = self.accelerator.unwrap_model(model)
-        if model.dtype != dtype or (isinstance(model, UNet2DConditionModel) and self.model.config_lora):
+        if model.dtype != dtype or (isinstance(model, UNet2DConditionModel) and
+                                    (self.model.config_lora or self.model.config_ip_adapter)):
             model = copy.deepcopy(model).to(dtype)
         return model
 
@@ -345,7 +429,24 @@ class SDTrainer(DiffusionTrainer):
         # create pipeline
         unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
         text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
-        if self.model.controls:
+        if self.model.ip_encoder:
+            pipeline = StableDiffusionPipeline.from_pretrained(
+                self.model.config_diffusion["pretrained_model_name_or_path"],
+                unet=unet.to(torch.float16),
+                torch_dtype=torch.float16,
+                safety_checker=None,
+            )
+            pipeline = pipeline.to(self.accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
+            proj_model = copy.deepcopy(self.model.ip_encoder.image_proj_model)
+            for p in proj_model.parameters():
+                p.data = p.to(torch.float16)
+            pipeline = ValidIPAdapter(pipeline,
+                                      self.get_same_dtype_model(self.model.ip_encoder.image_encoder, torch.float16),
+                                      proj_model,
+                                      self.accelerator.device
+                                      )
+        elif self.model.controls:
             controlnets = []
             for control in self.model.controls:
                 controlnets.append(self.get_same_dtype_model(control, dtype=torch.float16))

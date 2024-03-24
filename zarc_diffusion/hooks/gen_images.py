@@ -36,7 +36,12 @@ class GenHook(HookBase):
                 torch.cuda.empty_cache()
             # create pipeline
             pipeline = self.trainer.get_pipeline()
-            if self.trainer.model.controls:
+            if self.trainer.model.ip_encoder:
+                validation_images = Image.open(self.validation_images[0]).convert("RGB")
+                images = pipeline(self.validation_prompt, pil_image=validation_images,  num_inference_steps=20,
+                                  generator=generator, num_images_per_prompt=self.num_validation_images,
+                                  output_type=self.out_type)
+            elif self.trainer.model.controls:
                 assert self.validation_images, "control必须要有image"
                 validation_images = [Image.open(image).convert("RGB") for image in self.validation_images]
                 images = pipeline(self.validation_prompt, validation_images, num_inference_steps=20,

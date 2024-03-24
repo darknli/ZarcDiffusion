@@ -1,0 +1,40 @@
+model:
+  diffusion:
+    pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
+    train_unet: false
+    train_text_encoder: false
+  ip_adapter:
+    image_encoder_path: 'InvokeAI/ip_adapter_sd_image_encoder'
+    train_ip_adapter: true
+  noise_offset: 0
+  prediction_type: null
+  snr_gamma: 5.0
+
+train:
+  max_epoch: 1000
+  dataset_path: ''
+  size: 512
+  train_batch_size: 16
+  num_workers: 4
+
+  use_8bit_adam: false
+  mixed_precision: fp16
+  learning_rate: 1e-05
+  max_grad_norm: 1
+
+  warmup_method: linear
+  warmup_iters: 100
+  warmup_factor: 0.0001
+
+  lr_scheduler: constant
+  lr_warmup_steps: 0
+
+  validation_prompt: ''
+  validation_images:
+    - ''
+  max_to_keep: 10
+  period: 100
+
+  workspace: workspace/ip-adapter
+
+  gradient_accumulation_steps: 1
