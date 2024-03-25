@@ -24,7 +24,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     install_requires=[
-        "Pytorch-Frame @ git+https://github.com/darknli/Pytorch-Frame.git@master",
+        "Pytorch-Frame @ git+https://github.com/darknli/Pytorch-Frame.git@main",
         "pyyaml",
         "Pillow"
     ],
