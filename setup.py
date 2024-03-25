@@ -23,8 +23,9 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    install_requires=[  # 该库需要的依前库
-        "git+https://github.com/darknli/Pytorch-Frame.git",
+    install_requires=[
+        "Pytorch-Frame @ git+https://github.com/darknli/Pytorch-Frame.git@master",
+        "pyyaml",
         "Pillow"
     ],
     python_requires='>=3.6',
