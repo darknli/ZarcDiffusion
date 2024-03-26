@@ -26,7 +26,8 @@ setuptools.setup(
     install_requires=[
         "torch-frame @ git+https://github.com/darknli/Pytorch-Frame.git@main",
         "pyyaml",
-        "Pillow"
+        "Pillow",
+        "einops",
     ],
     python_requires='>=3.6',
 )
