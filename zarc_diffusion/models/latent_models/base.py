@@ -21,7 +21,7 @@ class BaseModel(torch.nn.Module):
                  noise_offset: float = None
                  ):
         super().__init__()
-        if torch_frame.utils.dist_utils.get_world_size() == 1:
+        if torch.cuda.device_count() == 1:
             self.device = "cuda"
             self.weight_dtype = torch.float16
         else:
