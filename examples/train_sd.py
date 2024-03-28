@@ -5,10 +5,25 @@ from torch_frame import LoggerHook
 from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook
 import yaml
 import torch
+import argparse
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="examples/configs/sd_lora.yaml",
+        required=False,
+        help="Path to config",
+    )
+    args = parser.parse_args()
+    return args
 
 
 def main():
-    with open("examples/configs/sd_ip_adapter.yaml") as f:
+    args = parse_args()
+    with open(args.config) as f:
         config = yaml.safe_load(f)
     config_model = config["model"]
     config_diffusion = config_model["diffusion"]
