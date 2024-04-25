@@ -108,7 +108,7 @@ def unpacking_dataset(root_src: str, root_dst: str, image_ext: str = ".jpg"):
                     f.write(value)
 
 
-def gen_metalist(root: str, meta_path: str):
+def gen_metalist(root: str, meta_path: str, cls_token: str = None):
     """给出图片&caption文本目录，生成metalist.csv"""
     data = []
     match_format = [".png", ".jpg", ".jpeg", ".webp"]
@@ -117,6 +117,8 @@ def gen_metalist(root: str, meta_path: str):
         for caption_path in pbar:
             with open(caption_path) as f:
                 caption = f.read()
+            if cls_token:
+                caption = cls_token + ". " + caption
             for ext in match_format:
                 image_path = caption_path.replace(".txt", ext)
                 if os.path.exists(image_path):

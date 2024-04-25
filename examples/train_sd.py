@@ -2,7 +2,7 @@ from zarc_diffusion.models.latent_models import StableDiffision, SDTrainer
 from zarc_diffusion.utils import MetaListDataset, SDOperator
 from torch.utils.data import DataLoader
 from torch_frame import LoggerHook
-from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook
+from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook, FIDHook
 import yaml
 import torch
 import argparse
@@ -72,9 +72,17 @@ def main():
                 config_train["validation_prompt"],
                 config_train.get("validation_images", None),
                 period=config_train["period"]),
-        DiffusersCheckpointerHook(
-            period=config_train["period"],
-            max_to_keep=config_train["max_to_keep"]),
+        # DiffusersCheckpointerHook(
+        #     period=config_train["period"],
+        #     max_to_keep=config_train["max_to_keep"]),
+        FIDHook(
+            [
+                "prompt1",
+                "prompt2",
+             ],
+            "directory",
+            period=config_train["period"]
+        ),
         LoggerHook(),
     ]
     scheduler = config_train["lr_scheduler"]
