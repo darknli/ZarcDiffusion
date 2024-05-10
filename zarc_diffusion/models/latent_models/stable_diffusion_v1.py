@@ -307,9 +307,6 @@ class StableDiffision(BaseModel):
     def run_control(self, batch, noisy_latents, timesteps, encoder_hidden_states, **kwargs):
         if not self.controls:
             return None, None
-        # 防止乱序
-        controlnet_cond = sorted(batch.items(), key=lambda x: x[0])
-        controlnet_cond = [v for k, v in controlnet_cond if "image" in k and k != "image_origin"]
         encoder_hidden_states = encoder_hidden_states.to(dtype=self.controls[0].dtype)
         noisy_latents = noisy_latents.to(dtype=self.controls[0].dtype)
 

@@ -76,12 +76,44 @@ class StableDiffusionXl(StableDiffision):
                                                                      batch["original_sizes"], batch["crop_top_lefts"])
 
         down_block_res_samples, mid_block_res_sample = self.run_control(batch, noisy_latents, timesteps,
-                                                                        prompt_embeds)
+                                                                        prompt_embeds,
+                                                                        unet_added_conditions=unet_added_conditions)
 
         model_pred = self.run_unet(noisy_latents, timesteps, prompt_embeds, down_block_res_samples,
                                    mid_block_res_sample, unet_added_conditions=unet_added_conditions)
         loss = self.run_loss(model_pred, noise, latents, timesteps)
         return loss
+
+    def run_control(self, batch, noisy_latents, timesteps, encoder_hidden_states, **kwargs):
+        if not self.controls:
+            return None, None
+        encoder_hidden_states = encoder_hidden_states.to(dtype=self.controls[0].dtype)
+        noisy_latents = noisy_latents.to(dtype=self.controls[0].dtype)
+        unet_added_conditions = kwargs.get("unet_added_conditions")
+        down_block_res_samples, mid_block_res_sample = None, None
+        for cfg, control in zip(self.config_controls, self.controls):
+            image = batch[cfg["image_key"]]
+            image = image.to(dtype=control.dtype)
+            down_samples, mid_sample = control(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                added_cond_kwargs=unet_added_conditions,
+                controlnet_cond=image,
+                return_dict=False,
+            )
+
+            # merge samples
+            if down_block_res_samples is None and mid_block_res_sample is None:
+                down_block_res_samples, mid_block_res_sample = down_samples, mid_sample
+            else:
+                down_block_res_samples = [
+                    samples_prev + samples_curr
+                    for samples_prev, samples_curr in zip(down_block_res_samples, down_samples)
+                ]
+                mid_block_res_sample += mid_sample
+
+        return down_block_res_samples, mid_block_res_sample
 
     def run_text_encoder(self, input_ids1, input_ids2, original_sizes, crop_top_lefts, resolution=1024):
         original_sizes = torch.stack(original_sizes, 1)
