@@ -1,21 +1,18 @@
 model:
   diffusion:
-    pretrained_model_name_or_path: 'runwayml/stable-diffusion-v1-5'
+    pretrained_model_name_or_path: 'stabilityai/stable-diffusion-2-inpainting'
     train_unet: false
-  controls:
-    - image_key: image_control1
-      pretrained_control_name_or_path: "lllyasviel/sd-controlnet-canny"
-      train_control: true
+  lora:
+    rank: 32
   noise_offset: 0
   prediction_type: null
   snr_gamma: 5.0
-
 
 train:
   max_epoch: 2000
   dataset_path: 'xz.csv'
   size: 512
-  train_batch_size: 4
+  train_batch_size: 16
   num_workers: 4
 
   use_8bit_adam: false
@@ -31,11 +28,9 @@ train:
   lr_warmup_steps: 0
 
   validation_prompt: '1girl, bow, brown eyes, brown hair, curtains'
-  validation_images:
-    - 'valid_control.png'
-  max_to_keep: 3
-  period: 5
+  max_to_keep: 30
+  period: 100
 
-  workspace: workspace/controlnet
+  workspace: workspace/inpainting
 
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 100

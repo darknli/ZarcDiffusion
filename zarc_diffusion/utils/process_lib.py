@@ -1,5 +1,6 @@
 """放一些数据处理"""
 import random
+import torch
 from torchvision.transforms import v2
 from transformers import CLIPTokenizer, AutoTokenizer, CLIPImageProcessor
 from PIL import Image
@@ -72,6 +73,54 @@ class SDOperator:
         ).input_ids
 
         output = {"input_ids": input_ids}
+        output.update(data_images)
+        output.update(ip_adapter_dict)
+        return output
+
+
+class SDInpaintingOperator:
+    def __init__(self,
+                 tokenizer: CLIPTokenizer = None,
+                 tokenizer_name_or_path: str = None,
+                 size: int = 512,
+                 key_caption: str = "caption"):
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+        elif tokenizer_name_or_path:
+            self.tokenizer = CLIPTokenizer.from_pretrained(
+                tokenizer_name_or_path, subfolder="tokenizer"
+            )
+        else:
+            raise ValueError
+        self.image_opt = NormalImageOperator(size=size)
+        self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        self.key_caption = key_caption
+        self.ip_opt = IPOprator()
+
+    def __call__(self, data):
+        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
+        ip_adapter_dict = self.ip_opt(data_images["image_origin"])
+        data_images = self.image_opt(data_images)
+        data_images["image_origin"] = self.normalize(data_images["image_origin"])
+
+        # mask中间那块区域置1
+        h, w = data_images["image_origin"].shape[1:3]
+        mask = torch.zeros((h, w), dtype=torch.float32)
+        bh, eh = int(h * 0.35), int(h * 0.65)
+        bw, ew = int(w * 0.35), int(w * 0.65)
+        mask[bh: eh, bw: ew] = 1
+
+        # mask=1的区域都mask掉
+        image_cond = data_images["image_origin"] * (mask[None] < 0.5)
+
+        input_ids = self.tokenizer(
+            data[self.key_caption], max_length=self.tokenizer.model_max_length,
+            padding="max_length", truncation=True, return_tensors="pt"
+        ).input_ids
+
+        output = {
+            "input_ids": input_ids, "mask": mask, "image_cond": image_cond, 
+        }
         output.update(data_images)
         output.update(ip_adapter_dict)
         return output

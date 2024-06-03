@@ -3,7 +3,7 @@ import copy
 import torch
 from torch.nn import functional as F
 from diffusers import (AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel,
-                       StableDiffusionControlNetPipeline)
+                       StableDiffusionControlNetPipeline, StableDiffusionInpaintPipeline)
 from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel
 from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
@@ -14,7 +14,7 @@ from zarc_diffusion.utils.calculatron import compute_snr
 
 class StableDiffision(BaseModel):
     """
-    封装stable diffusion model的类
+    封装stable diffusion model的类，实现文生图模型&训练loss模块代码
 
     Parameters
     ----------
@@ -352,7 +352,7 @@ class StableDiffision(BaseModel):
         ).sample
         return model_pred
 
-    def run_loss(self, model_pred, noise, latents, timesteps):
+    def run_loss(self, model_pred, noise, latents, timesteps, weights=None):
         # Get the target for loss depending on the prediction type
         if self.prediction_type is not None:
             # set prediction_type of scheduler if defined
@@ -366,7 +366,10 @@ class StableDiffision(BaseModel):
             raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
 
         if self.snr_gamma is None:
-            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            if weights is None:
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            else:
+                loss = (weights * F.mse_loss(model_pred.float(), target.float(), reduction="none")).mean()
         else:
             # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
             # Since we predict the noise instead of x_0, the original formulation is slightly changed.
@@ -381,11 +384,44 @@ class StableDiffision(BaseModel):
 
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
             loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+            if weights is not None:
+                loss = loss * weights
             loss = loss.mean()
         return loss
 
 
+class StableDiffusionInpainting(StableDiffision):
+    def forward(self, batch):
+        latents = self.run_vae(batch["image_origin"])
+        timesteps = self.run_timesteps(latents.shape[0])
+        noise, noisy_latents = self.sample_noise(latents, timesteps)
+
+        # inpainting的unet in_channel是8通道
+        mask = batch["mask"].to(dtype=latents.dtype)
+        latents_cond = self.run_vae(batch["image_cond"])
+        if len(mask.shape) == 3:
+            mask = mask[:, None]
+        mask = F.interpolate(mask, size=latents_cond.shape[2:])
+        noisy_with_cond = torch.cat([noisy_latents, mask, latents_cond], dim=1)
+
+        # Get the text embedding for conditioning
+        encoder_hidden_states = self.text_encoder(batch["input_ids"].to(self.device))[0]
+
+        down_block_res_samples, mid_block_res_sample = self.run_control(batch, noisy_latents, timesteps,
+                                                                        encoder_hidden_states)
+
+        if self.ip_encoder:
+            encoder_hidden_states = self.ip_encoder(
+                batch["ip_adapter_image"], encoder_hidden_states, no_drop_arr=batch["ip_adapter_no_drop"])
+
+        model_pred = self.run_unet(noisy_with_cond, timesteps, encoder_hidden_states, down_block_res_samples,
+                                   mid_block_res_sample)
+        loss = self.run_loss(model_pred, noise, latents, timesteps, weights=batch.get("weights", None))
+        return loss
+
+
 class SDTrainer(DiffusionTrainer):
+    """封装stable diffusion model的类，实现inpainting/outpainting训练&loss定义模块"""
     def save_checkpoint(self, dirname: str, save_single_model: bool = True,
                         print_info: bool = False) -> None:
         """注意，file_name是目录不再是文件"""
@@ -426,7 +462,13 @@ class SDTrainer(DiffusionTrainer):
         # create pipeline
         unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
         text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
-        if self.model.ip_encoder:
+        if isinstance(self.model, StableDiffusionInpainting):
+            pipeline = StableDiffusionInpaintPipeline.from_pretrained(
+                self.model.config_diffusion["pretrained_model_name_or_path"],
+                torch_dtype=torch.float32,
+                revision=None
+            )
+        elif self.model.ip_encoder:
             pipeline = StableDiffusionPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
                 unet=unet.to(torch.float16),
