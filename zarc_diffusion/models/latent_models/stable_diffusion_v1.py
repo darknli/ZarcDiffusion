@@ -369,6 +369,7 @@ class StableDiffision(BaseModel):
             if weights is None:
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
             else:
+                weights = F.interpolate(weights, size=model_pred.shape[2:])
                 loss = (weights * F.mse_loss(model_pred.float(), target.float(), reduction="none")).mean()
         else:
             # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
@@ -465,7 +466,8 @@ class SDTrainer(DiffusionTrainer):
         if isinstance(self.model, StableDiffusionInpainting):
             pipeline = StableDiffusionInpaintPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
-                torch_dtype=torch.float32,
+                unet=unet.to(torch.float16),
+                torch_dtype=torch.float16,
                 revision=None
             )
         elif self.model.ip_encoder:
