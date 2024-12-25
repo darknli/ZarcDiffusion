@@ -1,5 +1,7 @@
 from zarc_diffusion.models.latent_models import StableDiffision, SDTrainer
-from zarc_diffusion.utils import MetaListDataset, SDOperator
+from zarc_diffusion.utils import SDOperator
+from zarc_diffusion.hooks import ShuffleBucketHook
+from utils.dataset_bucket import AspectRatioBucketDataset
 from torch.utils.data import DataLoader
 from torch_frame import LoggerHook
 from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook, FIDHook
@@ -21,6 +23,37 @@ def parse_args():
     return args
 
 
+class BucketDataset(AspectRatioBucketDataset):
+    """
+    数据集应该是packing_dataset函数处理过的格式
+    """
+    def __init__(self, metalist_path: str, lambda_func, max_batchsize=2):
+        bucket = [(512, 512)]
+        w = [(64 * r, 512) for r in range(8, 15)]
+        h = [(512, 64 * r) for r in range(8, 15)]
+        bucket.extend(w)
+        bucket.extend(h)
+        self.df = pd.read_csv(metalist_path)
+        self.lambda_func = lambda_func
+        super().__init__(bucket, max_batchsize=max_batchsize)
+
+    def process(self, idx):
+        data = self.df.iloc[idx].to_dict()
+        bid = self.item2bid[idx]
+        w, h = self.buckets[bid]
+        item = self.lambda_func(data, (w, h))
+        return item
+
+
+def collection(data):
+    key_list = list(data[0].keys())
+    data_batch = {}
+    for k in key_list:
+        vs = [d[k] for d in data]
+        data_batch[k] = torch.from_numpy(np.stack(vs, 0))
+    return data_batch
+
+
 def main():
     args = parse_args()
     with open(args.config) as f:
@@ -39,7 +72,7 @@ def main():
                             noise_offset=config_model.get("noise_offset", None))
     sd_opt = SDOperator(tokenizer_name_or_path=config_diffusion["pretrained_model_name_or_path"],
                         size=config_train["size"])
-    train_dataset = MetaListDataset(config_train["dataset_path"], sd_opt)
+    train_dataset = BucketDataset(config_train["dataset_path"], sd_opt)
     train_loader = DataLoader(train_dataset,
                               shuffle=True,
                               persistent_workers=True,
@@ -68,6 +101,7 @@ def main():
     )
 
     hooks = [
+        ShuffleBucketHook(train_dataset),
         GenHook("valid_images",
                 config_train["validation_prompt"],
                 config_train.get("validation_images", None),

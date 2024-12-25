@@ -10,18 +10,32 @@ import numpy as np
 
 class NormalImageOperator:
     def __init__(self, size):
+        self.size = size
+        self.transform_resize = v2.Compose(
+            [
+                v2.Resize(self.size),
+                v2.CenterCrop(self.size),
+            ]
+        )
         self.transform = v2.Compose(
             [
-                v2.Resize(size),
-                v2.CenterCrop(size),
                 v2.RandomHorizontalFlip(),
                 v2.ToTensor(),
             ]
         )
 
-    def __call__(self, data):
+    def __call__(self, data, target_size=None):
         data_new = {}
         key_arr, value_arr = list(zip(*data.items()))
+        if target_size is None:
+            value_arr = self.transform_resize(value_arr)
+        else:
+            w, h = value_arr[0].size
+            tw, th = target_size
+            ratio = max(tw / w, th / h)
+            nw, nh = int(w * ratio + 0.5), int(h * ratio + 0.5)
+            value_arr = v2.Resize((nw, nh))(value_arr)
+            value_arr = v2.Resize((tw, th))(value_arr)
         value_arr = self.transform(value_arr)
         for key, value in zip(key_arr, value_arr):
             data_new[key] = value
@@ -61,10 +75,10 @@ class SDOperator:
         self.key_caption = key_caption
         self.ip_opt = IPOprator()
 
-    def __call__(self, data):
+    def __call__(self, data, target_size=None):
         data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
         ip_adapter_dict = self.ip_opt(data_images["image_origin"])
-        data_images = self.image_opt(data_images)
+        data_images = self.image_opt(data_images, target_size)
         data_images["image_origin"] = self.normalize(data_images["image_origin"])
 
         input_ids = self.tokenizer(
@@ -97,10 +111,10 @@ class SDInpaintingOperator:
         self.key_caption = key_caption
         self.ip_opt = IPOprator()
 
-    def __call__(self, data):
+    def __call__(self, data, target_size=None):
         data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
         ip_adapter_dict = self.ip_opt(data_images["image_origin"])
-        data_images = self.image_opt(data_images)
+        data_images = self.image_opt(data_images, target_size)
         data_images["image_origin"] = self.normalize(data_images["image_origin"])
 
         # mask中间那块区域置1
@@ -146,10 +160,10 @@ class SDXLOperator:
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
 
-    def __call__(self, data):
+    def __call__(self, data, target_size=None):
         data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
         origin_size = np.array(Image.open(data["image_origin"])).shape[:2]
-        data_images = self.image_opt(data_images)
+        data_images = self.image_opt(data_images, target_size)
         data_images["image_origin"] = self.normalize(data_images["image_origin"])
 
         input_ids1 = self.tokenizer1(
