@@ -56,6 +56,9 @@ class AspectRatioBucketDataset(Dataset, ABC):
         print("build_batch...")
         if len(self.batch_indices) > 0 and not self.shuffle:
             return
+        # 只有一个batch没有什么打乱的意义
+        elif len(self.batch_indices) == 1:
+            return
         self.batch_indices = []
         for bid, bucket in self.bid2row.items():
             if self.shuffle:

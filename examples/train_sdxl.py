@@ -1,13 +1,15 @@
 from zarc_diffusion.models.latent_models import StableDiffusionXl, SDXLTrainer
 from zarc_diffusion.utils import SDXLOperator
 from zarc_diffusion.hooks import ShuffleBucketHook
-from utils.dataset_bucket import AspectRatioBucketDataset
+from zarc_diffusion.utils.dataset_bucket import AspectRatioBucketDataset
 from torch.utils.data import DataLoader
 from torch_frame import LoggerHook
 from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook
 import yaml
 import torch
 import argparse
+import pandas as pd
+import numpy as np
 
 
 def parse_args():
@@ -50,7 +52,11 @@ def collection(data):
     data_batch = {}
     for k in key_list:
         vs = [d[k] for d in data]
-        data_batch[k] = torch.from_numpy(np.stack(vs, 0))
+        vs = [d if isinstance(d, torch.Tensor) else torch.tensor(d) for d in vs]
+        if k in {"original_sizes", "crop_top_lefts"}:
+            data_batch[k] = vs
+        else:
+            data_batch[k] = torch.from_numpy(np.stack(vs, 0))
     return data_batch
 
 
@@ -78,18 +84,14 @@ def main():
     train_loader = DataLoader(train_dataset,
                               shuffle=True,
                               persistent_workers=True,
-                              batch_size=config_train["train_batch_size"],
-                              num_workers=config_train["num_workers"])
+                              batch_size=None,
+                              num_workers=config_train["num_workers"],
+                              collate_fn=collection
+                              )
 
     if config_train["use_8bit_adam"]:
         print("使用8bit")
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "需要安装bitsandbytes; windows系统可以执行包名是bitsandbytes-windows"
-            )
-
+        import bitsandbytes as bnb
         optimizer_cls = bnb.optim.AdamW8bit
     else:
         optimizer_cls = torch.optim.AdamW

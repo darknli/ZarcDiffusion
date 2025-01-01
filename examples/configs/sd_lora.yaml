@@ -28,6 +28,7 @@ train:
   lr_warmup_steps: 0
 
   validation_prompt: '你的prompt'
+  fid_real_image_root: '真实图片的根目录'
   max_to_keep: 30
   period: 10
 

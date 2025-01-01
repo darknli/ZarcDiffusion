@@ -1,13 +1,15 @@
 from zarc_diffusion.models.latent_models import StableDiffision, SDTrainer
 from zarc_diffusion.utils import SDOperator
 from zarc_diffusion.hooks import ShuffleBucketHook
-from utils.dataset_bucket import AspectRatioBucketDataset
+from zarc_diffusion.utils.dataset_bucket import AspectRatioBucketDataset
 from torch.utils.data import DataLoader
 from torch_frame import LoggerHook
 from zarc_diffusion.hooks import GenHook, DiffusersCheckpointerHook, FIDHook
 import yaml
 import torch
 import argparse
+import pandas as pd
+import numpy as np
 
 
 def parse_args():
@@ -72,22 +74,18 @@ def main():
                             noise_offset=config_model.get("noise_offset", None))
     sd_opt = SDOperator(tokenizer_name_or_path=config_diffusion["pretrained_model_name_or_path"],
                         size=config_train["size"])
-    train_dataset = BucketDataset(config_train["dataset_path"], sd_opt)
+    train_dataset = BucketDataset(config_train["dataset_path"], sd_opt, config_train["train_batch_size"])
     train_loader = DataLoader(train_dataset,
                               shuffle=True,
                               persistent_workers=True,
-                              batch_size=config_train["train_batch_size"],
-                              num_workers=config_train["num_workers"])
+                              batch_size=None,
+                              num_workers=config_train["num_workers"],
+                              collate_fn=collection
+                              )
 
     if config_train["use_8bit_adam"]:
         print("使用8bit")
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "需要安装bitsandbytes; windows系统可以执行包名是bitsandbytes-windows"
-            )
-
+        import bitsandbytes as bnb
         optimizer_cls = bnb.optim.AdamW8bit
     else:
         optimizer_cls = torch.optim.AdamW
@@ -111,10 +109,9 @@ def main():
         #     max_to_keep=config_train["max_to_keep"]),
         FIDHook(
             [
-                "prompt1",
-                "prompt2",
+                config_train["validation_prompt"],
              ],
-            "directory",
+            config_train.get("fid_real_image_root", None),
             period=config_train["period"]
         ),
         LoggerHook(),

@@ -14,10 +14,10 @@ train:
   max_epoch: 1000
   dataset_path: ''
   size: 1024
-  train_batch_size: 2
-  num_workers: 2
+  train_batch_size: 4
+  num_workers: 4
 
-  use_8bit_adam: false
+  use_8bit_adam: true
   mixed_precision: fp16
   learning_rate: 1e-04
   max_grad_norm: 1
@@ -30,6 +30,7 @@ train:
   lr_warmup_steps: 0
 
   validation_prompt: ''
+  fid_real_image_root: '真实图片的根目录'
   num_validation_images: 2
   max_to_keep: 30
   period: 2
