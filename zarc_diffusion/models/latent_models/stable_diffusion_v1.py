@@ -10,6 +10,7 @@ from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_para
 from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
 from .base import BaseModel, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
+from peft import LoraConfig
 
 
 class StableDiffision(BaseModel):
@@ -127,43 +128,15 @@ class StableDiffision(BaseModel):
         if "train_unet" in self.config_diffusion and self.config_diffusion["train_unet"]:
             raise ValueError("不要既训练unet又训练lora!")
         rank = config["rank"]
-        unet_lora_parameters = []
-        for attn_processor_name, attn_processor in self.unet.attn_processors.items():
-            # Parse the attention module.
-            attn_module = self.unet
-            for n in attn_processor_name.split(".")[:-1]:
-                attn_module = getattr(attn_module, n)
-
-            # Set the `lora_layer` attribute of the attention-related matrices.
-            attn_module.to_q.set_lora_layer(
-                LoRALinearLayer(
-                    in_features=attn_module.to_q.in_features, out_features=attn_module.to_q.out_features, rank=rank
-                ).to(self.unet.device)
-            )
-            attn_module.to_k.set_lora_layer(
-                LoRALinearLayer(
-                    in_features=attn_module.to_k.in_features, out_features=attn_module.to_k.out_features, rank=rank
-                ).to(self.unet.device)
-            )
-
-            attn_module.to_v.set_lora_layer(
-                LoRALinearLayer(
-                    in_features=attn_module.to_v.in_features, out_features=attn_module.to_v.out_features, rank=rank
-                ).to(self.unet.device)
-            )
-            attn_module.to_out[0].set_lora_layer(
-                LoRALinearLayer(
-                    in_features=attn_module.to_out[0].in_features,
-                    out_features=attn_module.to_out[0].out_features,
-                    rank=rank,
-                ).to(self.unet.device)
-            )
-
-            # Accumulate the LoRA params to optimize.
-            unet_lora_parameters.extend(attn_module.to_q.lora_layer.parameters())
-            unet_lora_parameters.extend(attn_module.to_k.lora_layer.parameters())
-            unet_lora_parameters.extend(attn_module.to_v.lora_layer.parameters())
-            unet_lora_parameters.extend(attn_module.to_out[0].lora_layer.parameters())
+        unet_lora_config = LoraConfig(
+            r=rank,
+            lora_alpha=rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        )
+        self.unet.add_adapter(unet_lora_config)
+        unet_lora_parameters = cast_training_params(self.unet)
+        # self.unet.enable_gradient_checkpointing()
         self.lora = unet_lora_parameters
         self.trainable_params.extend(unet_lora_parameters)
 
