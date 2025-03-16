@@ -80,7 +80,7 @@ def main():
                               noise_offset=config_model.get("noise_offset", None))
     sd_opt = SDXLOperator(tokenizer_name_or_path=config_diffusion["pretrained_model_name_or_path"],
                           size=config_train["size"])
-    train_dataset = BucketDataset(config_train["dataset_path"], sd_opt)
+    train_dataset = BucketDataset(config_train["dataset_path"], sd_opt, config_train["train_batch_size"])
     train_loader = DataLoader(train_dataset,
                               shuffle=True,
                               persistent_workers=True,

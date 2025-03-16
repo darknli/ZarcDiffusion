@@ -116,8 +116,8 @@ class StableDiffusionXl(StableDiffision):
         return down_block_res_samples, mid_block_res_sample
 
     def run_text_encoder(self, input_ids1, input_ids2, original_sizes, crop_top_lefts, resolution=1024):
-        original_sizes = torch.stack(original_sizes, 1)
-        crop_top_lefts = torch.stack(crop_top_lefts, 1)
+        original_sizes = torch.stack(original_sizes, 0)
+        crop_top_lefts = torch.stack(crop_top_lefts, 0)
         resolution_ids = torch.full((original_sizes.shape[0], 2), resolution,
                                     device=self.device, dtype=original_sizes.dtype)
 
