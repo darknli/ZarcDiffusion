@@ -2,7 +2,7 @@
 import random
 import torch
 from torchvision.transforms import v2
-from transformers import CLIPTokenizer, AutoTokenizer, CLIPImageProcessor
+from transformers import CLIPTokenizer, T5Tokenizer, AutoTokenizer, CLIPImageProcessor
 from PIL import Image
 from typing import Tuple
 import numpy as np
@@ -182,3 +182,61 @@ class SDXLOperator:
         output["crop_top_lefts"] = [0, 0]
         return output
 
+
+class FluxOperator:
+    def __init__(self,
+                 tokenizer: CLIPTokenizer = None,
+                 tokenizer2: T5Tokenizer = None,
+                 tokenizer_name_or_path: str = None,
+                 size: int = 512,
+                 key_caption: str = "caption"):
+        if tokenizer is not None and tokenizer2 is not None:
+            self.tokenizer = tokenizer
+            self.tokenizer2 = tokenizer2
+        elif tokenizer_name_or_path:
+            self.tokenizer = CLIPTokenizer.from_pretrained(
+                tokenizer_name_or_path, subfolder="tokenizer"
+            )
+            self.tokenizer2 = T5Tokenizer.from_pretrained(
+                tokenizer_name_or_path, subfolder="tokenizer_2"
+            )
+        else:
+            raise ValueError
+        self.image_opt = NormalImageOperator(size=size)
+        self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        self.key_caption = key_caption
+        self.ip_opt = IPOprator()
+
+    def __call__(self, data, target_size=None):
+        data_images = {k: Image.open(v) for k, v in data.items() if "image" in k and "ip_adapter" not in k}
+        ip_adapter_dict = self.ip_opt(data_images["image_origin"])
+        data_images = self.image_opt(data_images, target_size)
+        data_images["image_origin"] = self.normalize(data_images["image_origin"])
+
+        input_ids = self.tokenizer(
+            data[self.key_caption],
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_overflowing_tokens=False,
+            return_length=False,
+            return_tensors="pt",
+        ).input_ids
+
+        input_ids2 = self.tokenizer2(
+            data[self.key_caption],
+            padding="max_length",
+            max_length=512,
+            truncation=True,
+            return_overflowing_tokens=False,
+            return_length=False,
+            return_tensors="pt",
+        ).input_ids
+
+        output = {
+            "input_ids": input_ids,
+            "input_ids2": input_ids2,
+        }
+        output.update(data_images)
+        output.update(ip_adapter_dict)
+        return output

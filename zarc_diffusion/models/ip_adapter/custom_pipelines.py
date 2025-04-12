@@ -15,7 +15,7 @@ else:
 
 class StableDiffusionXLCustomPipeline(StableDiffusionXLPipeline):
     def set_scale(self, scale):
-        for attn_processor in self.unet.attn_processors.values():
+        for attn_processor in self.latent_diffusion_model.attn_processors.values():
             if isinstance(attn_processor, IPAttnProcessor):
                 attn_processor.scale = scale
 
@@ -64,12 +64,12 @@ class StableDiffusionXLCustomPipeline(StableDiffusionXLPipeline):
             prompt_2 (`str` or `List[str]`, *optional*):
                 The prompt or prompts to be sent to the `tokenizer_2` and `text_encoder_2`. If not defined, `prompt` is
                 used in both text-encoders
-            height (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
+            height (`int`, *optional*, defaults to self.latent_diffusion_model.config.sample_size * self.vae_scale_factor):
                 The height in pixels of the generated image. This is set to 1024 by default for the best results.
                 Anything below 512 pixels won't work well for
                 [stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)
                 and checkpoints that are not specifically fine-tuned on low resolutions.
-            width (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
+            width (`int`, *optional*, defaults to self.latent_diffusion_model.config.sample_size * self.vae_scale_factor):
                 The width in pixels of the generated image. This is set to 1024 by default for the best results.
                 Anything below 512 pixels won't work well for
                 [stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)
@@ -252,7 +252,7 @@ class StableDiffusionXLCustomPipeline(StableDiffusionXLPipeline):
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.config.in_channels
+        num_channels_latents = self.latent_diffusion_model.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -316,7 +316,7 @@ class StableDiffusionXLCustomPipeline(StableDiffusionXLPipeline):
             timesteps = timesteps[:num_inference_steps]
 
         # get init conditioning scale
-        for attn_processor in self.unet.attn_processors.values():
+        for attn_processor in self.latent_diffusion_model.attn_processors.values():
             if isinstance(attn_processor, IPAttnProcessor):
                 conditioning_scale = attn_processor.scale
                 break
@@ -335,7 +335,7 @@ class StableDiffusionXLCustomPipeline(StableDiffusionXLPipeline):
 
                 # predict the noise residual
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-                noise_pred = self.unet(
+                noise_pred = self.latent_diffusion_model(
                     latent_model_input,
                     t,
                     encoder_hidden_states=prompt_embeds,

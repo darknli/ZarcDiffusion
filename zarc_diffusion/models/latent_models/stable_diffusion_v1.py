@@ -58,7 +58,7 @@ class StableDiffision(BaseModel):
                  snr_gamma: float = None,
                  noise_offset: float = None,
                  ):
-        self.unet = None
+        self.latent_diffusion_model = None
         self.text_encoder = None
         self.vae = None
         self.noise_scheduler = None
@@ -72,11 +72,11 @@ class StableDiffision(BaseModel):
     def init_diffusion(self, config):
         pretrained_model_name_or_path = config["pretrained_model_name_or_path"]
         self.text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder")
-        self.unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+        self.latent_diffusion_model = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
 
         if "unet_dtype" not in config:
             config["unet_dtype"] = "fp16"
-        self.unet.to(self.device, str2torch_dtype(config["unet_dtype"], default=self.weight_dtype))
+        self.latent_diffusion_model.to(self.device, str2torch_dtype(config["unet_dtype"], default=self.weight_dtype))
 
         if "text_encoder_dtype" not in config:
             config["text_encoder_dtype"] = config["unet_dtype"]
@@ -87,9 +87,9 @@ class StableDiffision(BaseModel):
             config["train_unet"] = False
         if not config["train_unet"]:
             print("freeze unet")
-            self.unet.requires_grad_(False)
+            self.latent_diffusion_model.requires_grad_(False)
         else:
-            self.trainable_params = cast_training_params(self.unet)
+            self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
             config["train_text_encoder"] = False
@@ -134,9 +134,9 @@ class StableDiffision(BaseModel):
             init_lora_weights="gaussian",
             target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         )
-        self.unet.add_adapter(unet_lora_config)
-        unet_lora_parameters = cast_training_params(self.unet)
-        # self.unet.enable_gradient_checkpointing()
+        self.latent_diffusion_model.add_adapter(unet_lora_config)
+        unet_lora_parameters = cast_training_params(self.latent_diffusion_model)
+        # self.latent_diffusion_model.enable_gradient_checkpointing()
         self.lora = unet_lora_parameters
         self.trainable_params.extend(unet_lora_parameters)
 
@@ -153,24 +153,24 @@ class StableDiffision(BaseModel):
         assert not self.config_lora, "暂不支持使用ip-adapter时训练lora"
         image_encoder_path = config["image_encoder_path"]
         self.ip_encoder = IPAdaperEncoder(image_encoder_path=image_encoder_path,
-                                          cross_attention_dim=self.unet.config.cross_attention_dim)
+                                          cross_attention_dim=self.latent_diffusion_model.config.cross_attention_dim)
         if "ip_adapter_dtype" not in config:
             config["ip_adapter_dtype"] = None
         self.ip_encoder.to(self.device, str2torch_dtype(config["ip_adapter_dtype"], default=self.weight_dtype))
 
         # init adapter modules
         attn_procs = {}
-        unet_sd = self.unet.state_dict()
-        for name in self.unet.attn_processors.keys():
-            cross_attention_dim = None if name.endswith("attn1.processor") else self.unet.config.cross_attention_dim
+        unet_sd = self.latent_diffusion_model.state_dict()
+        for name in self.latent_diffusion_model.attn_processors.keys():
+            cross_attention_dim = None if name.endswith("attn1.processor") else self.latent_diffusion_model.config.cross_attention_dim
             if name.startswith("mid_block"):
-                hidden_size = self.unet.config.block_out_channels[-1]
+                hidden_size = self.latent_diffusion_model.config.block_out_channels[-1]
             elif name.startswith("up_blocks"):
                 block_id = int(name[len("up_blocks.")])
-                hidden_size = list(reversed(self.unet.config.block_out_channels))[block_id]
+                hidden_size = list(reversed(self.latent_diffusion_model.config.block_out_channels))[block_id]
             elif name.startswith("down_blocks"):
                 block_id = int(name[len("down_blocks.")])
-                hidden_size = self.unet.config.block_out_channels[block_id]
+                hidden_size = self.latent_diffusion_model.config.block_out_channels[block_id]
             if cross_attention_dim is None:
                 attn_procs[name] = AttnProcessor()
             else:
@@ -181,8 +181,8 @@ class StableDiffision(BaseModel):
                 }
                 attn_procs[name] = IPAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
                 attn_procs[name].load_state_dict(weights)
-        self.unet.set_attn_processor(attn_procs)
-        adapter_modules = torch.nn.ModuleList(self.unet.attn_processors.values())
+        self.latent_diffusion_model.set_attn_processor(attn_procs)
+        adapter_modules = torch.nn.ModuleList(self.latent_diffusion_model.attn_processors.values())
         adapter_modules.to(self.device, str2torch_dtype(config["ip_adapter_dtype"], default=self.weight_dtype))
 
         if "pretrain_model" in config and config["pretrain_model"]:
@@ -217,7 +217,7 @@ class StableDiffision(BaseModel):
                 control = ControlNetModel.from_pretrained(pretrained_control_name_or_path)
                 print(f"controlnet加载{pretrained_control_name_or_path}权重")
             else:
-                control = ControlNetModel.from_unet(self.unet)
+                control = ControlNetModel.from_unet(self.latent_diffusion_model)
                 print(f"从unet中初始化controlnet")
             if "control_dtype" not in cfg_control:
                 cfg_control["control_dtype"] = None
@@ -254,7 +254,7 @@ class StableDiffision(BaseModel):
     def run_vae(self, pixel_values):
         latents = self.vae.encode(pixel_values.to(dtype=self.vae.dtype)).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
-        latents = latents.to(dtype=self.unet.dtype)
+        latents = latents.to(dtype=self.latent_diffusion_model.dtype)
         return latents
 
     def run_timesteps(self, bsz):
@@ -309,14 +309,14 @@ class StableDiffision(BaseModel):
 
     def run_unet(self, noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples, mid_block_res_sample):
         # Predict the noise residual and compute loss
-        encoder_hidden_states = encoder_hidden_states.to(dtype=self.unet.dtype)
+        encoder_hidden_states = encoder_hidden_states.to(dtype=self.latent_diffusion_model.dtype)
         if down_block_res_samples:
             down_block_res_samples = [
-                sample.to(dtype=self.unet.dtype) for sample in down_block_res_samples
+                sample.to(dtype=self.latent_diffusion_model.dtype) for sample in down_block_res_samples
             ]
-            mid_block_res_sample = mid_block_res_sample.to(dtype=self.unet.dtype)
+            mid_block_res_sample = mid_block_res_sample.to(dtype=self.latent_diffusion_model.dtype)
 
-        model_pred = self.unet(
+        model_pred = self.latent_diffusion_model(
             noisy_latents,
             timesteps,
             encoder_hidden_states,

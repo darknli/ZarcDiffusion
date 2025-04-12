@@ -1,0 +1,36 @@
+model:
+  diffusion:
+    pretrained_model_name_or_path: 'black-forest-labs/FLUX.1-dev'
+    train_unet: false
+  lora:
+    rank: 32
+  noise_offset: 0
+  prediction_type: null
+  snr_gamma: null
+
+train:
+  max_epoch: 5000
+  dataset_path: '你的csv文件'
+  size: 256
+  train_batch_size: 1
+  num_workers: 4
+
+  use_8bit_adam: false
+  mixed_precision: fp16
+  learning_rate: 1e-04
+  max_grad_norm: 1
+
+  warmup_method: linear
+  warmup_iters: 100
+  warmup_factor: 0.0001
+
+  lr_scheduler: constant
+  lr_warmup_steps: 0
+
+  validation_prompt: '测试inference阶段用的prompt'
+  max_to_keep: 30
+  period: 50
+
+  workspace: workspace/flux_lora
+
+  gradient_accumulation_steps: 1

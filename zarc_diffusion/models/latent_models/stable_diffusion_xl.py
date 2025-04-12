@@ -36,11 +36,11 @@ class StableDiffusionXl(StableDiffision):
         pretrained_model_name_or_path = config["pretrained_model_name_or_path"]
         self.text_encoder1 = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder")
         self.text_encoder2 = CLIPTextModelWithProjection.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder_2")
-        self.unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+        self.latent_diffusion_model = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
 
         if "unet_dtype" not in config:
             config["unet_dtype"] = "fp16"
-        self.unet.to(self.device, str2torch_dtype(config["unet_dtype"], default=self.weight_dtype))
+        self.latent_diffusion_model.to(self.device, str2torch_dtype(config["unet_dtype"], default=self.weight_dtype))
 
         if "text_encoder_dtype" not in config:
             config["text_encoder_dtype"] = config["unet_dtype"]
@@ -52,9 +52,9 @@ class StableDiffusionXl(StableDiffision):
             config["train_unet"] = False
         if not config["train_unet"]:
             print("freeze unet")
-            self.unet.requires_grad_(False)
+            self.latent_diffusion_model.requires_grad_(False)
         else:
-            self.trainable_params = cast_training_params(self.unet)
+            self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
             config["train_text_encoder"] = False
@@ -154,14 +154,14 @@ class StableDiffusionXl(StableDiffision):
                  down_block_res_samples, mid_block_res_sample, **kwargs):
         # Predict the noise residual and compute loss
         unet_added_conditions = kwargs.get("unet_added_conditions")
-        prompt_embeds = prompt_embeds.to(dtype=self.unet.dtype)
+        prompt_embeds = prompt_embeds.to(dtype=self.latent_diffusion_model.dtype)
         if down_block_res_samples:
             down_block_res_samples = [
-                sample.to(dtype=self.unet.dtype) for sample in down_block_res_samples
+                sample.to(dtype=self.latent_diffusion_model.dtype) for sample in down_block_res_samples
             ]
-            mid_block_res_sample = mid_block_res_sample.to(dtype=self.unet.dtype)
+            mid_block_res_sample = mid_block_res_sample.to(dtype=self.latent_diffusion_model.dtype)
 
-        model_pred = self.unet(
+        model_pred = self.latent_diffusion_model(
             noisy_latents,
             timesteps,
             prompt_embeds,
