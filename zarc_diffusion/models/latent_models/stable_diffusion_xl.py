@@ -54,6 +54,8 @@ class StableDiffusionXl(StableDiffision):
             print("freeze unet")
             self.latent_diffusion_model.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                self.latent_diffusion_model.enable_gradient_checkpointing()
             self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
@@ -63,6 +65,12 @@ class StableDiffusionXl(StableDiffision):
             self.text_encoder1.requires_grad_(False)
             self.text_encoder2.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                for text_encoder in [self.text_encoder1, self.text_encoder2]:
+                    if hasattr(text_encoder, 'enable_gradient_checkpointing'):
+                        text_encoder.enable_gradient_checkpointing()
+                    if hasattr(text_encoder, "gradient_checkpointing_enable"):
+                        text_encoder.gradient_checkpointing_enable()
             self.trainable_params.extend(cast_training_params(self.text_encoder1))
             self.trainable_params.extend(cast_training_params(self.text_encoder2))
 

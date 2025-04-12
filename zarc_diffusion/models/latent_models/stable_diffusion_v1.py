@@ -89,6 +89,8 @@ class StableDiffision(BaseModel):
             print("freeze unet")
             self.latent_diffusion_model.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                self.latent_diffusion_model.enable_gradient_checkpointing()
             self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
@@ -97,6 +99,11 @@ class StableDiffision(BaseModel):
             print("freeze text_encoder")
             self.text_encoder.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                if hasattr(self.text_encoder, 'enable_gradient_checkpointing'):
+                    self.text_encoder.enable_gradient_checkpointing()
+                if hasattr(self.text_encoder, "gradient_checkpointing_enable"):
+                    self.text_encoder.gradient_checkpointing_enable()
             self.trainable_params.extend(cast_training_params(self.text_encoder))
 
     def init_vae(self, config):
@@ -127,6 +134,8 @@ class StableDiffision(BaseModel):
     def init_lora(self, config):
         if "train_unet" in self.config_diffusion and self.config_diffusion["train_unet"]:
             raise ValueError("不要既训练unet又训练lora!")
+        if config.get("enable_gradient_checkpointing", False):
+            self.latent_diffusion_model.enable_gradient_checkpointing()
         rank = config["rank"]
         unet_lora_config = LoraConfig(
             r=rank,
@@ -198,6 +207,9 @@ class StableDiffision(BaseModel):
             self.ip_encoder.requires_grad_(False)
             adapter_modules.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                self.ip_encoder.enable_gradient_checkpointing()
+                adapter_modules.enable_gradient_checkpointing()
             self.trainable_params.extend(cast_training_params([self.ip_encoder.image_proj_model, adapter_modules]))
         self.adapter_modules = adapter_modules
 
@@ -225,6 +237,8 @@ class StableDiffision(BaseModel):
 
             if train_control:
                 control.train()
+                if config.get("enable_gradient_checkpointing", False):
+                    control.enable_gradient_checkpointing()
                 self.trainable_params.extend(cast_training_params(control))
             else:
                 control.requires_grad_(False)

@@ -7,7 +7,7 @@ from diffusers import (AutoencoderKL, FlowMatchEulerDiscreteScheduler, StableDif
                        StableDiffusionControlNetPipeline, StableDiffusionInpaintPipeline)
 from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel, CLIPTokenizer, T5TokenizerFast, T5EncoderModel
-from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
+from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params, flush_vram
 from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
 from .stable_diffusion_v1 import StableDiffision, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
@@ -210,6 +210,8 @@ class Flux(StableDiffision):
             print("freeze unet")
             self.latent_diffusion_model.requires_grad_(False)
         else:
+            if config.get("enable_gradient_checkpointing", False):
+                self.latent_diffusion_model.enable_gradient_checkpointing()
             self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
@@ -221,8 +223,14 @@ class Flux(StableDiffision):
             self.text_encoder.eval()
             self.text_encoder_2.eval()
         else:
+            for text_encoder in [self.text_encoder, self.text_encoder_2]:
+                if hasattr(text_encoder, 'enable_gradient_checkpointing'):
+                    text_encoder.enable_gradient_checkpointing()
+                if hasattr(text_encoder, "gradient_checkpointing_enable"):
+                    text_encoder.gradient_checkpointing_enable()
             self.trainable_params.extend(cast_training_params(self.text_encoder))
             self.trainable_params.extend(cast_training_params(self.text_encoder_2))
+        flush_vram()
 
     def init_scheduler(self, config):
         # 根据http://github.com/ostris/ai-toolkit.git，以下面方式调用scheduler

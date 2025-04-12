@@ -1,4 +1,5 @@
 from typing import Union, List
+import gc
 import torch
 from torch_frame.utils.dist_utils import get_rank
 
@@ -42,3 +43,9 @@ def get_gpu_free_memory():
     memory_free = memory_total - memory_uesd
     memory_free_g = (memory_free / 1024 / 1024 / 1024)
     return memory_free_g
+
+
+def flush_vram():
+    """清除显存缓存"""
+    torch.cuda.empty_cache()
+    gc.collect()
