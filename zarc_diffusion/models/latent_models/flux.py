@@ -275,7 +275,7 @@ class Flux(StableDiffision):
 
         return noise, noisy_latents
 
-    def run_unet(self, noisy_latents, timesteps, encoder_hidden_states, pooled_encoder_hidden_states):
+    def run_diffusion_model(self, noisy_latents, timesteps, encoder_hidden_states, pooled_encoder_hidden_states):
         # Predict the noise residual and compute loss
         noisy_latents = noisy_latents.to(self.device, dtype=self.latent_diffusion_model.dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=self.latent_diffusion_model.dtype)
@@ -346,6 +346,6 @@ class Flux(StableDiffision):
             encoder_hidden_states = self.ip_encoder(
                 batch["ip_adapter_image"], encoder_hidden_states, no_drop_arr=batch["ip_adapter_no_drop"])
 
-        model_pred = self.run_unet(noisy_latents, timesteps, encoder_hidden_states, pooled_prompt_embeds)
+        model_pred = self.run_diffusion_model(noisy_latents, timesteps, encoder_hidden_states, pooled_prompt_embeds)
         loss = self.run_loss(model_pred, noise, latents, timesteps)
         return loss

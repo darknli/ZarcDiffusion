@@ -79,8 +79,10 @@ class StableDiffusionXl(StableDiffision):
                                                                         prompt_embeds,
                                                                         unet_added_conditions=unet_added_conditions)
 
-        model_pred = self.run_unet(noisy_latents, timesteps, prompt_embeds, down_block_res_samples,
-                                   mid_block_res_sample, unet_added_conditions=unet_added_conditions)
+        model_pred = self.run_diffusion_model(
+            noisy_latents, timesteps, prompt_embeds, down_block_res_samples,
+            mid_block_res_sample, unet_added_conditions=unet_added_conditions
+        )
         loss = self.run_loss(model_pred, noise, latents, timesteps)
         return loss
 
@@ -150,7 +152,7 @@ class StableDiffusionXl(StableDiffision):
         }
         return prompt_embeds, unet_added_conditions
 
-    def run_unet(self, noisy_latents, timesteps, prompt_embeds,
+    def run_diffusion_model(self, noisy_latents, timesteps, prompt_embeds,
                  down_block_res_samples, mid_block_res_sample, **kwargs):
         # Predict the noise residual and compute loss
         unet_added_conditions = kwargs.get("unet_added_conditions")

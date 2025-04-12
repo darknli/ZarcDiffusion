@@ -246,7 +246,7 @@ class StableDiffision(BaseModel):
             encoder_hidden_states = self.ip_encoder(
                 batch["ip_adapter_image"], encoder_hidden_states, no_drop_arr=batch["ip_adapter_no_drop"])
 
-        model_pred = self.run_unet(noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples,
+        model_pred = self.run_diffusion_model(noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples,
                                    mid_block_res_sample)
         loss = self.run_loss(model_pred, noise, latents, timesteps)
         return loss
@@ -307,7 +307,9 @@ class StableDiffision(BaseModel):
 
         return down_block_res_samples, mid_block_res_sample
 
-    def run_unet(self, noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples, mid_block_res_sample):
+    def run_diffusion_model(
+            self, noisy_latents, timesteps, encoder_hidden_states, down_block_res_samples, mid_block_res_sample
+    ):
         # Predict the noise residual and compute loss
         encoder_hidden_states = encoder_hidden_states.to(dtype=self.latent_diffusion_model.dtype)
         if down_block_res_samples:
@@ -388,8 +390,9 @@ class StableDiffusionInpainting(StableDiffision):
             encoder_hidden_states = self.ip_encoder(
                 batch["ip_adapter_image"], encoder_hidden_states, no_drop_arr=batch["ip_adapter_no_drop"])
 
-        model_pred = self.run_unet(noisy_with_cond, timesteps, encoder_hidden_states, down_block_res_samples,
-                                   mid_block_res_sample)
+        model_pred = self.run_diffusion_model(
+            noisy_with_cond, timesteps, encoder_hidden_states, down_block_res_samples, mid_block_res_sample
+        )
         loss = self.run_loss(model_pred, noise, latents, timesteps, weights=batch.get("weights", None))
         return loss
 
