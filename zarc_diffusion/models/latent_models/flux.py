@@ -3,15 +3,19 @@ import copy
 import torch
 from typing import Union
 from torch.nn import functional as F
-from diffusers import (AutoencoderKL, FlowMatchEulerDiscreteScheduler, StableDiffusionPipeline, FluxTransformer2DModel,
+from diffusers import (AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxPipeline, FluxTransformer2DModel,
                        StableDiffusionControlNetPipeline, StableDiffusionInpaintPipeline)
+from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.models.lora import LoRALinearLayer
+from diffusers.utils.torch_utils import is_compiled_module
 from transformers import CLIPTextModel, CLIPTokenizer, T5TokenizerFast, T5EncoderModel
-from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params, flush_vram
+from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params, flush_vram, quantization
 from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
+from zarc_diffusion.utils.model_quantization import quantization
 from .stable_diffusion_v1 import StableDiffision, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
 from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 from einops import rearrange, repeat
 
 
@@ -203,6 +207,14 @@ class Flux(StableDiffision):
         self.text_encoder_2.to(self.device, str2torch_dtype(config["text_encoder_dtype"], default=self.weight_dtype))
         self.text_encoder.to(self.device, str2torch_dtype(config["text_encoder_dtype"], default=self.weight_dtype))
 
+        if "quantization" not in config:
+            config["quantization"] = False
+        elif config["quantization"]:
+            print("使用量化!")
+
+        if config["quantization"]:
+            quantization(self.latent_diffusion_model)
+
         # freeze unet
         if "train_unet" not in config:
             config["train_unet"] = False
@@ -211,11 +223,17 @@ class Flux(StableDiffision):
             self.latent_diffusion_model.requires_grad_(False)
         else:
             if config.get("enable_gradient_checkpointing", False):
-                self.latent_diffusion_model.enable_gradient_checkpointing()
+                # self.latent_diffusion_model.enable_gradient_checkpointing()
+                # 这里跟其他模型不一样
+                self.latent_diffusion_model.gradient_checkpointing = True
             self.trainable_params = cast_training_params(self.latent_diffusion_model)
 
         if "train_text_encoder" not in config:
             config["train_text_encoder"] = False
+
+        if config["quantization"]:
+            quantization(self.text_encoder_2)
+
         if not config["train_text_encoder"]:
             print("freeze text_encoder")
             self.text_encoder.requires_grad_(False)
@@ -233,19 +251,25 @@ class Flux(StableDiffision):
         flush_vram()
 
     def init_scheduler(self, config):
+        if config is None:
+            config = {}
         # 根据http://github.com/ostris/ai-toolkit.git，以下面方式调用scheduler
-        config = {
+        custom_flow_match_config = {
             "_class_name": "FlowMatchEulerDiscreteScheduler",
             "_diffusers_version": "0.29.0.dev0",
             "num_train_timesteps": 1000,
             "shift": 3.0,
             'prediction_type': 'epsilon'
         }
-        self.noise_scheduler = CustomFlowMatchEulerDiscreteScheduler.from_config(config)
+        self.noise_scheduler = CustomFlowMatchEulerDiscreteScheduler.from_config(custom_flow_match_config)
+        if "num_timesteps" not in config:
+            config["num_timesteps"] = self.max_denoising_steps
+        if config.get("is_linear"):
+            self.noise_scheduler.set_train_timesteps(config["num_timesteps"])
+        self.config_scheduler = config
 
     def run_timesteps(self, bsz):
         # Sample a random timestep for each image
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=self.device)
         if self.min_denoising_steps == self.max_denoising_steps:
             timestep_indices = torch.ones((batch_size,), device=self.device) * self.min_noise_steps
         else:
@@ -301,9 +325,10 @@ class Flux(StableDiffision):
         img_ids = torch.zeros(h // 2, w // 2, 3)
         img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
         img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
-        img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs).to(
+        # 新版的img_ids和txt_ids不需要batch维，如有问题可升级最新版本
+        img_ids = repeat(img_ids, "h w c -> (h w) c").to(
             self.device, dtype=self.latent_diffusion_model.dtype)
-        txt_ids = torch.zeros(bs, encoder_hidden_states.shape[1], 3).to(
+        txt_ids = torch.zeros(encoder_hidden_states.shape[1], 3).to(
             self.device, dtype=self.latent_diffusion_model.dtype)
 
         model_pred = self.latent_diffusion_model(
@@ -314,8 +339,8 @@ class Flux(StableDiffision):
             encoder_hidden_states=encoder_hidden_states,
             # [1, 512, 4096]
             pooled_projections=pooled_encoder_hidden_states,  # [1, 768]
-            txt_ids=txt_ids,  # [1, 512, 3]
-            img_ids=img_ids,  # [1, 4096, 3]
+            txt_ids=txt_ids,  # [512, 3]
+            img_ids=img_ids,  # [4096, 3]
             guidance=guidance,
             return_dict=False,
         )[0]
@@ -357,3 +382,76 @@ class Flux(StableDiffision):
         model_pred = self.run_diffusion_model(noisy_latents, timesteps, encoder_hidden_states, pooled_prompt_embeds)
         loss = self.run_loss(model_pred, noise, latents, timesteps)
         return loss
+
+
+
+class FluxTrainer(DiffusionTrainer):
+    """封装stable diffusion model的类，实现inpainting/outpainting训练&loss定义模块"""
+    def save_checkpoint(self, dirname: str, save_single_model: bool = True,
+                        print_info: bool = False) -> None:
+        """注意，file_name是目录不再是文件"""
+        save_path = os.path.join(self.ckpt_dir, dirname)
+        os.makedirs(save_path, exist_ok=True)
+        if self.model.lora is not None:
+            latent_diffusion_model = self.model.latent_diffusion_model
+            latent_diffusion_model = self.accelerator.unwrap_model(latent_diffusion_model)
+            if is_compiled_module(latent_diffusion_model):
+                latent_diffusion_model = latent_diffusion_model._orig_mod
+            lora_state_dict = convert_state_dict_to_diffusers(
+                get_peft_model_state_dict(latent_diffusion_model)
+            )
+            FluxPipeline.save_lora_weights(
+                save_directory=save_path,
+                transformer_lora_layers=lora_state_dict,
+                safe_serialization=True,
+                weight_name="lora.safetensors"
+            )
+            # self.model.latent_diffusion_model.save_attn_procs(save_path,
+            #                                 weight_name="lora.safetensors")
+        if self.model.ip_encoder is not None:
+            image_proj_model = self.model.ip_encoder.image_proj_model
+            torch.save(
+                {
+                    "image_proj": image_proj_model.state_dict(),
+                    "ip_adapter": self.model.adapter_modules.state_dict()
+                },
+                os.path.join(save_path, "ip-adapter.pth")
+            )
+        if self.model.controls is not None:
+            for i, (control, cfg_control) in enumerate(zip(self.model.controls, self.model.config_controls)):
+                if cfg_control.get("train_control", False):
+                    save_control_path = os.path.join(save_path, f"control_{i}")
+                    control.save_pretrained(save_control_path)
+        if self.model.config_diffusion["train_unet"]:
+            self.model.latent_diffusion_model.save_pretrained(os.path.join(save_path, "unet"))
+        if self.model.config_diffusion["train_text_encoder"]:
+            self.model.text_encoder.save_pretrained(os.path.join(save_path, "text_encoder"))
+
+
+    def get_pipeline(self):
+        """给出当前模型组合而成的pipline"""
+        # create pipeline
+        # latent_diffusion_model = self.get_same_dtype_model(self.model.latent_diffusion_model, dtype=torch.float16)
+        # text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            self.model.config_diffusion["pretrained_model_name_or_path"], subfolder="scheduler")
+        if self.model.ip_encoder:
+            raise ValueError("Flux暂时还不支持ip-adapter")
+        elif self.model.controls:
+            raise ValueError("Flux暂时还不支持controlnet")
+        else:
+            pipeline = FluxPipeline(
+                scheduler=scheduler,
+                text_encoder=self.model.text_encoder,
+                tokenizer=self.model.tokenizer,
+                text_encoder_2=None,
+                tokenizer_2=self.model.tokenizer_2,
+                vae=self.model.vae,
+                transformer=None,
+            )
+            pipeline.transformer = self.model.latent_diffusion_model
+            pipeline.text_encoder_2 = self.model.text_encoder_2
+
+            pipeline = pipeline.to(self.accelerator.device)
+            pipeline.set_progress_bar_config(disable=True)
+        return pipeline

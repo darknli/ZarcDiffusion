@@ -39,7 +39,7 @@ def get_gpu_free_memory():
     """查看gpu剩余显存"""
     current_device = torch.device(get_rank())
     memory_total = torch.cuda.get_device_properties(current_device).total_memory
-    memory_uesd = torch.cuda.memory_cached(current_device)
+    memory_uesd = torch.cuda.memory_reserved(current_device)
     memory_free = memory_total - memory_uesd
     memory_free_g = (memory_free / 1024 / 1024 / 1024)
     return memory_free_g
@@ -49,3 +49,16 @@ def flush_vram():
     """清除显存缓存"""
     torch.cuda.empty_cache()
     gc.collect()
+
+
+def quantization(model):
+    """模型量化"""
+    try:
+        from optimum.quanto import freeze, qfloat8, quantize, QTensor
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError("需要安装optimum库，请执行'pip install optimum-quanto'")
+    quantization_type = qfloat8
+    print("Quantizing transformer")
+    quantize(model, weights=quantization_type)
+    freeze(model)
+    flush_vram()

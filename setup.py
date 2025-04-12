@@ -10,7 +10,7 @@ os.chdir(os.path.normpath(os.path.join(os.path.abspath(__file__), os.pardir)))
 
 setuptools.setup(
     name="zarc_diffusion",  # 库名, 需要在pypi中唯一
-    version="0.3.2",  # 版本号
+    version="0.3.3",  # 版本号
     author="Darkn Lxs",  # 作者
     author_email="1187220556@qq.com",  # 作看都将（方便使用索类现问图后成我我们）
     description="用于快速实现diffusion代码的代码库",  # 简介
@@ -36,7 +36,7 @@ setuptools.setup(
         "bitsandbytes",
         "sentencepiece",
         "huggingface_hub",
-        "peft"
+        "peft",
     ],
     python_requires='>=3.9',
 )

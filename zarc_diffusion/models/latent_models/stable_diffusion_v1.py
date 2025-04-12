@@ -419,7 +419,7 @@ class SDTrainer(DiffusionTrainer):
         save_path = os.path.join(self.ckpt_dir, dirname)
         os.makedirs(save_path, exist_ok=True)
         if self.model.lora is not None:
-            self.model.unet.save_attn_procs(save_path,
+            self.model.latent_diffusion_model.save_attn_procs(save_path,
                                             weight_name="lora.safetensors")
         if self.model.ip_encoder is not None:
             image_proj_model = self.model.ip_encoder.image_proj_model
@@ -436,7 +436,7 @@ class SDTrainer(DiffusionTrainer):
                     save_control_path = os.path.join(save_path, f"control_{i}")
                     control.save_pretrained(save_control_path)
         if self.model.config_diffusion["train_unet"]:
-            self.model.unet.save_pretrained(os.path.join(save_path, "unet"))
+            self.model.latent_diffusion_model.save_pretrained(os.path.join(save_path, "unet"))
         if self.model.config_diffusion["train_text_encoder"]:
             self.model.text_encoder.save_pretrained(os.path.join(save_path, "text_encoder"))
 
@@ -451,19 +451,19 @@ class SDTrainer(DiffusionTrainer):
     def get_pipeline(self):
         """给出当前模型组合而成的pipline"""
         # create pipeline
-        unet = self.get_same_dtype_model(self.model.unet, dtype=torch.float16)
+        latent_diffusion_model = self.get_same_dtype_model(self.model.latent_diffusion_model, dtype=torch.float16)
         text_encoder = self.get_same_dtype_model(self.model.text_encoder, dtype=torch.float16)
         if isinstance(self.model, StableDiffusionInpainting):
             pipeline = StableDiffusionInpaintPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
-                unet=unet.to(torch.float16),
+                unet=latent_diffusion_model.to(torch.float16),
                 torch_dtype=torch.float16,
                 revision=None
             )
         elif self.model.ip_encoder:
             pipeline = StableDiffusionPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
-                unet=unet.to(torch.float16),
+                unet=latent_diffusion_model.to(torch.float16),
                 torch_dtype=torch.float16,
                 safety_checker=None,
             )
@@ -483,7 +483,7 @@ class SDTrainer(DiffusionTrainer):
                 controlnets.append(self.get_same_dtype_model(control, dtype=torch.float16))
             pipeline = StableDiffusionControlNetPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
-                unet=unet.to(torch.float16),
+                unet=latent_diffusion_model.to(torch.float16),
                 text_encoder=text_encoder.to(torch.float16),
                 controlnet=controlnets,
                 torch_dtype=torch.float16,
@@ -494,7 +494,7 @@ class SDTrainer(DiffusionTrainer):
         else:
             pipeline = StableDiffusionPipeline.from_pretrained(
                 self.model.config_diffusion["pretrained_model_name_or_path"],
-                unet=unet.to(torch.float16),
+                unet=latent_diffusion_model.to(torch.float16),
                 torch_dtype=torch.float16,
                 safety_checker=None,
             )
