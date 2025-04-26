@@ -4,7 +4,6 @@ import torch
 from torch.nn import functional as F
 from diffusers import (AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel,
                        StableDiffusionControlNetPipeline, StableDiffusionInpaintPipeline)
-from diffusers.models.lora import LoRALinearLayer
 from transformers import CLIPTextModel
 from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params
 from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
