@@ -34,8 +34,8 @@ class NormalImageOperator:
             tw, th = target_size
             ratio = max(tw / w, th / h)
             nw, nh = int(w * ratio + 0.5), int(h * ratio + 0.5)
-            value_arr = v2.Resize((nw, nh))(value_arr)
-            value_arr = v2.Resize((tw, th))(value_arr)
+            value_arr = v2.Resize((nh, nw))(value_arr)
+            value_arr = v2.CenterCrop((th, tw))(value_arr)
         value_arr = self.transform(value_arr)
         for key, value in zip(key_arr, value_arr):
             data_new[key] = value

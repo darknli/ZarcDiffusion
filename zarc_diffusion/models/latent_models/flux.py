@@ -11,7 +11,6 @@ from diffusers.utils.torch_utils import is_compiled_module
 from transformers import CLIPTextModel, CLIPTokenizer, T5TokenizerFast, T5EncoderModel
 from zarc_diffusion.utils.utils_model import str2torch_dtype, cast_training_params, flush_vram, quantization
 from zarc_diffusion.models.ip_adapter import IPAdaperEncoder, ValidIPAdapter
-from zarc_diffusion.utils.model_quantization import quantization
 from .stable_diffusion_v1 import StableDiffision, DiffusionTrainer
 from zarc_diffusion.utils.calculatron import compute_snr
 from peft import LoraConfig
