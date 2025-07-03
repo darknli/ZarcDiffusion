@@ -9,11 +9,13 @@ from zarc_diffusion.utils.utils_model import get_gpu_free_memory
 
 
 class GenHook(HookBase):
-    def __init__(self, save_dir, validation_prompt, validation_images=None,
+    def __init__(self, save_dir, validation_prompt, validation_images=None, width=1024, height=1024,
                  num_validation_images=1, seed=0, period=1, merge_result=True):
         self.save_dir = save_dir
         self.validation_prompt = validation_prompt
         self.validation_images = validation_images
+        self.width = width
+        self.height = height
         self.num_validation_images = num_validation_images
         self.seed = seed
         self.period = period
@@ -38,9 +40,13 @@ class GenHook(HookBase):
             pipeline = self.trainer.get_pipeline()
             if self.trainer.model.ip_encoder:
                 validation_images = Image.open(self.validation_images[0]).convert("RGB")
-                images = pipeline(self.validation_prompt, pil_image=validation_images,  num_inference_steps=20,
-                                  generator=generator, num_images_per_prompt=self.num_validation_images,
-                                  output_type=self.out_type)
+                images = pipeline(
+                    self.validation_prompt, pil_image=validation_images,  num_inference_steps=20,
+                    width=self.width,
+                    height=self.height,
+                    generator=generator, num_images_per_prompt=self.num_validation_images,
+                    output_type=self.out_type
+                )
             elif self.trainer.model.controls:
                 assert self.validation_images, "control必须要有image"
                 validation_images = [Image.open(image).convert("RGB") for image in self.validation_images]
@@ -48,9 +54,13 @@ class GenHook(HookBase):
                                   generator=generator, num_images_per_prompt=self.num_validation_images,
                                   output_type=self.out_type).images
             else:
-                images = pipeline(self.validation_prompt, num_inference_steps=30, generator=generator,
-                                  num_images_per_prompt=self.num_validation_images,
-                                  output_type=self.out_type).images
+                images = pipeline(
+                    self.validation_prompt, num_inference_steps=30, generator=generator,
+                    width=self.width,
+                    height=self.height,
+                    num_images_per_prompt=self.num_validation_images,
+                    output_type=self.out_type
+                ).images
             image_dir = os.path.join(self.trainer.work_dir, self.save_dir)
             os.makedirs(image_dir, exist_ok=True)
             if self.merge_result:
