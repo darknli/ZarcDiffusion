@@ -136,11 +136,16 @@ class StableDiffision(BaseModel):
         if config.get("enable_gradient_checkpointing", False):
             self.latent_diffusion_model.enable_gradient_checkpointing()
         rank = config["rank"]
+        if "target_modules" in config:
+            target_modules = config["target_modules"]
+        else:
+            target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
+            print(f"lora配置里没有发现`target_modules`设置，采用默认配置:{target_modules}")
         unet_lora_config = LoraConfig(
             r=rank,
             lora_alpha=rank,
             init_lora_weights="gaussian",
-            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            target_modules=target_modules,
         )
         self.latent_diffusion_model.add_adapter(unet_lora_config)
         unet_lora_parameters = cast_training_params(self.latent_diffusion_model)

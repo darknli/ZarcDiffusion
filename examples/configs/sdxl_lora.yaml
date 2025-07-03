@@ -6,6 +6,11 @@ model:
     vae_dtype: fp32
   lora:
     rank: 32
+    target_modules:
+      - to_k
+      - to_q
+      - to_v
+      - to_out.0
   noise_offset: 0
   prediction_type: null
   snr_gamma: 5.0
