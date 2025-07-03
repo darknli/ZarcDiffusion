@@ -9,7 +9,7 @@ import numpy as np
 
 
 class NormalImageOperator:
-    def __init__(self, size):
+    def __init__(self, size, enable_flip=True):
         self.size = size
         self.transform_resize = v2.Compose(
             [
@@ -17,12 +17,15 @@ class NormalImageOperator:
                 v2.CenterCrop(self.size),
             ]
         )
-        self.transform = v2.Compose(
-            [
-                v2.RandomHorizontalFlip(),
-                v2.ToTensor(),
-            ]
-        )
+        if enable_flip:
+            self.transform = v2.Compose(
+                [
+                    v2.RandomHorizontalFlip(),
+                    v2.ToTensor(),
+                ]
+            )
+        else:
+            self.transform = v2.ToTensor()
 
     def __call__(self, data, target_size=None):
         data_new = {}
@@ -57,11 +60,14 @@ class IPOprator:
 
 
 class SDOperator:
-    def __init__(self,
-                 tokenizer: CLIPTokenizer = None,
-                 tokenizer_name_or_path: str = None,
-                 size: int = 512,
-                 key_caption: str = "caption"):
+    def __init__(
+            self,
+            tokenizer: CLIPTokenizer = None,
+            tokenizer_name_or_path: str = None,
+            size: int = 512,
+            key_caption: str = "caption",
+            enable_flip: bool = True,
+    ):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         elif tokenizer_name_or_path:
@@ -70,7 +76,7 @@ class SDOperator:
             )
         else:
             raise ValueError
-        self.image_opt = NormalImageOperator(size=size)
+        self.image_opt = NormalImageOperator(size=size, enable_flip=enable_flip)
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
         self.ip_opt = IPOprator()
@@ -93,11 +99,14 @@ class SDOperator:
 
 
 class SDInpaintingOperator:
-    def __init__(self,
-                 tokenizer: CLIPTokenizer = None,
-                 tokenizer_name_or_path: str = None,
-                 size: int = 512,
-                 key_caption: str = "caption"):
+    def __init__(
+            self,
+            tokenizer: CLIPTokenizer = None,
+            tokenizer_name_or_path: str = None,
+            size: int = 512,
+            key_caption: str = "caption",
+            enable_flip: bool = True,
+         ):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         elif tokenizer_name_or_path:
@@ -106,7 +115,7 @@ class SDInpaintingOperator:
             )
         else:
             raise ValueError
-        self.image_opt = NormalImageOperator(size=size)
+        self.image_opt = NormalImageOperator(size=size, enable_flip=enable_flip)
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
         self.ip_opt = IPOprator()
@@ -141,10 +150,14 @@ class SDInpaintingOperator:
 
 
 class SDXLOperator:
-    def __init__(self, tokenizer: Tuple[CLIPTokenizer] = None,
-                 tokenizer_name_or_path: str = None,
-                 size: int = 1024,
-                 key_caption: str = "caption"):
+    def __init__(
+            self,
+            tokenizer: Tuple[CLIPTokenizer] = None,
+            tokenizer_name_or_path: str = None,
+            size: int = 1024,
+            key_caption: str = "caption",
+            enable_flip: bool = True,
+    ):
         if tokenizer is not None:
             self.tokenizer1, self.tokenizer2 = tokenizer
         elif tokenizer_name_or_path:
@@ -156,7 +169,7 @@ class SDXLOperator:
             )
         else:
             raise ValueError
-        self.image_opt = NormalImageOperator(size=size)
+        self.image_opt = NormalImageOperator(size=size, enable_flip=enable_flip)
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
 
@@ -184,12 +197,15 @@ class SDXLOperator:
 
 
 class FluxOperator:
-    def __init__(self,
-                 tokenizer: CLIPTokenizer = None,
-                 tokenizer2: T5Tokenizer = None,
-                 tokenizer_name_or_path: str = None,
-                 size: int = 512,
-                 key_caption: str = "caption"):
+    def __init__(
+            self,
+            tokenizer: CLIPTokenizer = None,
+            tokenizer2: T5Tokenizer = None,
+            tokenizer_name_or_path: str = None,
+            size: int = 512,
+            key_caption: str = "caption",
+            enable_flip: bool = True,
+    ):
         if tokenizer is not None and tokenizer2 is not None:
             self.tokenizer = tokenizer
             self.tokenizer2 = tokenizer2
@@ -202,7 +218,7 @@ class FluxOperator:
             )
         else:
             raise ValueError
-        self.image_opt = NormalImageOperator(size=size)
+        self.image_opt = NormalImageOperator(size=size, enable_flip=enable_flip)
         self.normalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         self.key_caption = key_caption
         self.ip_opt = IPOprator()
